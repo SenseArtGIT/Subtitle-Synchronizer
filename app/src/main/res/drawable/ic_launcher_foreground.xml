@@ -1,0 +1,14 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- екран -->
+    <path android:fillColor="#FFFFFF" android:pathData="M26,32h56a4,4 0,0 1,4 4v32a4,4 0,0 1,-4 4h-56a4,4 0,0 1,-4 -4v-32a4,4 0,0 1,4 -4z"/>
+    <path android:fillColor="#1B2A4A" android:pathData="M28,36h52v30h-52z"/>
+    <!-- субтитри -->
+    <path android:fillColor="#FFD76A" android:pathData="M36,54h36a2,2 0,0 1,0 4h-36a2,2 0,0 1,0 -4z"/>
+    <path android:fillColor="#FFD76A" android:pathData="M42,60h24a2,2 0,0 1,0 4h-24a2,2 0,0 1,0 -4z"/>
+    <!-- стрелки -->
+    <path android:fillColor="#9FD3FF" android:pathData="M34,44l6,-5v10z"/>
+    <path android:fillColor="#9FD3FF" android:pathData="M74,44l-6,-5v10z"/>
+    <path android:fillColor="#9FD3FF" android:pathData="M42,43h24v2h-24z"/>
+</vector>

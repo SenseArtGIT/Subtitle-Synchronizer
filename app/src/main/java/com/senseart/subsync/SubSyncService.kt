@@ -1,0 +1,736 @@
+package com.senseart.subsync
+
+import android.accessibilityservice.AccessibilityService
+import android.content.ComponentName
+import android.content.SharedPreferences
+import android.graphics.PixelFormat
+import android.media.MediaMetadata
+import android.media.session.MediaController
+import android.media.session.MediaSessionManager
+import android.media.session.PlaybackState
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.util.Log
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.KeyEvent
+import android.view.View
+import android.view.WindowManager
+import android.view.accessibility.AccessibilityEvent
+import android.widget.Toast
+import java.io.File
+
+/**
+ * Сърцето на приложението. Работи като услуга за достъпност, защото само така може:
+ *  - да рисува субтитри и панел над картината на друг плейър;
+ *  - да получава бутоните на дистанционното, докато ViMu е отпред.
+ */
+class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPreferenceChangeListener {
+
+    private lateinit var prefs: Prefs
+    private lateinit var wm: WindowManager
+    private val handler = Handler(Looper.getMainLooper())
+
+    private var subtitleView: SubtitleView? = null
+    private var subtitleParams: WindowManager.LayoutParams? = null
+    private var panelView: PanelView? = null
+
+    private var sub: SubtitleFile? = null
+    private var model = SyncModel()
+    private var clock: PlaybackClock? = null
+    private val manualClock = ManualClock()
+
+    /** true, ако ръчният часовник следва реалното време на филма (не е просто от нула). */
+    private var manualMeaningful = false
+    private var sessionManager: MediaSessionManager? = null
+
+    private var foregroundPkg: String? = null
+    private var subsEnabled = true
+
+    private enum class Page { NONE, SYNC, MENU, FILES }
+
+    private var page = Page.NONE
+    private var followCurrent = true
+    private var cueSel = 0
+    private var markVideoMs: Long? = null
+    private var menuSel = 0
+    private val browser = FileBrowser()
+    private var status = ""
+    private var statusUntil = 0L
+    private var swallowUp = -1
+    private var lastPanelRender = 0L
+    private var lastClockCheck = 0L
+
+    // ---------------------------------------------------------------- жизнен цикъл
+
+    override fun onServiceConnected() {
+        running = true
+        prefs = Prefs(this)
+        prefs.sp.registerOnSharedPreferenceChangeListener(this)
+        wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        sessionManager = getSystemService(MEDIA_SESSION_SERVICE) as MediaSessionManager
+        try {
+            sessionManager?.addOnActiveSessionsChangedListener(sessionsListener, listenerComponent(), handler)
+        } catch (e: SecurityException) {
+            Log.i(TAG, "Няма „Достъп до известия“ – ще се ползва ръчен часовник")
+        }
+        addSubtitleWindow()
+        refreshClock()
+        prefs.lastFile?.let { File(it) }?.takeIf { it.isFile }?.let { loadFile(it, quiet = true) }
+        handler.post(tick)
+    }
+
+    override fun onUnbind(intent: android.content.Intent?): Boolean {
+        shutdown()
+        return super.onUnbind(intent)
+    }
+
+    override fun onDestroy() {
+        shutdown()
+        super.onDestroy()
+    }
+
+    private fun shutdown() {
+        if (!running) return
+        running = false
+        handler.removeCallbacksAndMessages(null)
+        try {
+            sessionManager?.removeOnActiveSessionsChangedListener(sessionsListener)
+        } catch (_: Exception) {
+        }
+        (clock as? SessionClock)?.release()
+        clock = null
+        if (::prefs.isInitialized) prefs.sp.unregisterOnSharedPreferenceChangeListener(this)
+        listOfNotNull(subtitleView, panelView).forEach {
+            try {
+                wm.removeView(it)
+            } catch (_: Exception) {
+            }
+        }
+        subtitleView = null
+        panelView = null
+    }
+
+    override fun onInterrupt() {}
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+        val pkg = event.packageName?.toString() ?: return
+        if (pkg == packageName || pkg == "com.android.systemui" || pkg == "android") return
+        if (event.className?.toString()?.contains("Toast") == true) return
+        foregroundPkg = pkg
+    }
+
+    override fun onSharedPreferenceChanged(sp: SharedPreferences?, key: String?) {
+        when (key) {
+            Prefs.K_TEXT_SIZE -> subtitleView?.setTextSizeSp(prefs.textSizeSp)
+            Prefs.K_BOTTOM -> subtitleParams?.let {
+                it.y = dp(prefs.bottomMarginDp)
+                try {
+                    wm.updateViewLayout(subtitleView, it)
+                } catch (_: Exception) {
+                }
+            }
+
+            Prefs.K_FORCE_MANUAL -> refreshClock()
+        }
+    }
+
+    // ---------------------------------------------------------------- прозорци
+
+    private fun dp(v: Int) =
+        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
+
+    private fun overlayParams(width: Int, gravity: Int) = WindowManager.LayoutParams(
+        width,
+        WindowManager.LayoutParams.WRAP_CONTENT,
+        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+        PixelFormat.TRANSLUCENT,
+    ).also { it.gravity = gravity }
+
+    private fun addSubtitleWindow() {
+        val v = SubtitleView(this)
+        v.setTextSizeSp(prefs.textSizeSp)
+        val w = (resources.displayMetrics.widthPixels * 0.9).toInt()
+        val p = overlayParams(w, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+        p.y = dp(prefs.bottomMarginDp)
+        wm.addView(v, p)
+        subtitleView = v
+        subtitleParams = p
+    }
+
+    private fun ensurePanel(): PanelView {
+        panelView?.let { return it }
+        val v = PanelView(this)
+        val w = (resources.displayMetrics.widthPixels * 0.8).toInt()
+        val p = overlayParams(w, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+        p.y = dp(20)
+        wm.addView(v, p)
+        panelView = v
+        return v
+    }
+
+    // ---------------------------------------------------------------- време на филма
+
+    private fun listenerComponent() = ComponentName(this, MediaListenerService::class.java)
+
+    private val sessionsListener =
+        MediaSessionManager.OnActiveSessionsChangedListener { refreshClock() }
+
+    private fun videoNow(): Long? = clock?.positionMs()
+
+    /** Избира най-добрия източник на време: позицията от плейъра или ръчния часовник. */
+    private fun refreshClock() {
+        if (!running) return
+        val old = clock
+        var next: PlaybackClock? = null
+        if (!prefs.forceManualClock) {
+            val controllers: List<MediaController> = try {
+                sessionManager?.getActiveSessions(listenerComponent())
+            } catch (e: SecurityException) {
+                null
+            } ?: emptyList()
+            val c = controllers.firstOrNull { it.packageName == prefs.playerPackage }
+                ?: controllers.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING }
+            if (c != null) {
+                if (old is SessionClock && old.controller.sessionToken == c.sessionToken && old.positionMs() != null) return
+                val sc = SessionClock(c, handler) { prefs.calibrationMs }
+                if (sc.positionMs() != null) next = sc else sc.release()
+            }
+        }
+        if (next == null) {
+            if (old === manualClock) return
+            // Продължаваме от последната известна позиция, за да няма скок.
+            val last = old?.positionMs()
+            if (last != null) {
+                manualClock.restart()
+                manualClock.setPosition(last, old.isPlaying())
+                manualMeaningful = true
+            }
+            next = manualClock
+        } else if (old === manualClock && manualMeaningful) {
+            // Преминаваме от ръчен часовник към плейъра: пазим вече направения синхрон.
+            val d = (next.positionMs() ?: 0L) - manualClock.positionMs()
+            model.nudge(d)
+            saveModel()
+        }
+        if (old is SessionClock && old !== next) old.release()
+        clock = next
+        if (page != Page.NONE) flash("Време от: ${next.label}")
+    }
+
+    // ---------------------------------------------------------------- цикъл на изобразяване
+
+    private val tick = object : Runnable {
+        override fun run() {
+            try {
+                update()
+            } catch (t: Throwable) {
+                Log.e(TAG, "update", t)
+            }
+            if (running) handler.postDelayed(this, 40)
+        }
+    }
+
+    private fun update() {
+        val now = SystemClock.uptimeMillis()
+        val s = sub
+        val fg = foregroundPkg
+        val show = s != null && subsEnabled &&
+            (page != Page.NONE || fg == null || fg == prefs.playerPackage)
+        val v = videoNow()
+        if (show && v != null) {
+            val t = model.cueTimeAt(v)
+            subtitleView?.setSubtitle(s!!.activeAt(t).joinToString("\n") { it.text })
+        } else {
+            subtitleView?.setSubtitle("")
+        }
+        if (page != Page.NONE && now - lastPanelRender > 200) renderPanel()
+        if (now - lastClockCheck > 3000) {
+            lastClockCheck = now
+            if (clock === manualClock && !prefs.forceManualClock) refreshClock()
+        }
+    }
+
+    private fun flash(msg: String) {
+        status = msg
+        statusUntil = SystemClock.uptimeMillis() + 7000
+        if (page == Page.NONE) {
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+        } else renderPanel()
+    }
+
+    // ---------------------------------------------------------------- бутони
+
+    override fun onKeyEvent(e: KeyEvent): Boolean {
+        if (!::prefs.isInitialized) return false
+        val code = e.keyCode
+        if (e.action == KeyEvent.ACTION_UP && code == swallowUp) {
+            swallowUp = -1
+            return true
+        }
+        if (prefs.learning) return learnKey(e)
+
+        val hot = prefs.hotkey
+        if (hot != 0 && code == hot) {
+            if (e.action == KeyEvent.ACTION_UP) onHotkey()
+            return true
+        }
+        return when (page) {
+            Page.NONE -> {
+                observePlayerKey(e); false
+            }
+
+            Page.SYNC -> keySync(e)
+            Page.MENU -> keyMenu(e)
+            Page.FILES -> keyFiles(e)
+        }
+    }
+
+    private fun learnKey(e: KeyEvent): Boolean {
+        if (e.action != KeyEvent.ACTION_UP) return true
+        if (e.keyCode == KeyEvent.KEYCODE_BACK) {
+            prefs.learning = false
+            Toast.makeText(this, "Изборът на бутон е отменен", Toast.LENGTH_SHORT).show()
+            return true
+        }
+        if (Keys.isForbiddenHotkey(e.keyCode)) {
+            Toast.makeText(this, "Този бутон е нужен за управлението – изберете друг", Toast.LENGTH_SHORT).show()
+            return true
+        }
+        prefs.hotkey = e.keyCode
+        prefs.learning = false
+        Toast.makeText(this, "Бутон за панела: ${Keys.name(e.keyCode)}", Toast.LENGTH_LONG).show()
+        return true
+    }
+
+    /** Ръчният часовник следи Play/Pause, докато панелът е затворен. */
+    private fun observePlayerKey(e: KeyEvent) {
+        if (clock !== manualClock || e.action != KeyEvent.ACTION_DOWN || e.repeatCount != 0) return
+        if (foregroundPkg != null && foregroundPkg != prefs.playerPackage) return
+        when (e.keyCode) {
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK -> manualClock.toggle()
+            KeyEvent.KEYCODE_MEDIA_PLAY -> manualClock.resume()
+            KeyEvent.KEYCODE_MEDIA_PAUSE, KeyEvent.KEYCODE_MEDIA_STOP -> manualClock.pause()
+            else -> if (Keys.isOk(e.keyCode) && prefs.okPausesPlayer) manualClock.toggle()
+        }
+    }
+
+    private fun onHotkey() {
+        when (page) {
+            Page.NONE -> {
+                val fg = foregroundPkg
+                if (fg != null && fg != packageName) prefs.playerPackage = fg
+                refreshClock()
+                ensurePanel().visibility = View.VISIBLE
+                if (sub == null || currentFileLooksWrong()) openFiles() else openSync()
+            }
+
+            Page.SYNC -> {
+                page = Page.MENU; renderPanel()
+            }
+
+            Page.MENU -> openSync()
+            Page.FILES -> if (sub != null) openSync() else closePanel()
+        }
+    }
+
+    private fun openSync() {
+        page = Page.SYNC
+        followCurrent = true
+        markVideoMs = null
+        renderPanel()
+    }
+
+    private fun closePanel(swallowKey: Int = -1) {
+        page = Page.NONE
+        followCurrent = true
+        markVideoMs = null
+        panelView?.visibility = View.GONE
+        if (swallowKey >= 0) swallowUp = swallowKey
+    }
+
+    private fun stepFor(repeat: Int) = when {
+        repeat < 6 -> 100L
+        repeat < 20 -> 1_000L
+        else -> 10_000L
+    }
+
+    private fun keySync(e: KeyEvent): Boolean {
+        val down = e.action == KeyEvent.ACTION_DOWN
+        when (e.keyCode) {
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                if (down) {
+                    val step = stepFor(e.repeatCount)
+                    nudge(if (e.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) step else -step)
+                }
+            }
+
+            KeyEvent.KEYCODE_DPAD_UP -> if (down) moveCue(-1)
+            KeyEvent.KEYCODE_DPAD_DOWN -> if (down) moveCue(+1)
+            KeyEvent.KEYCODE_BACK -> if (!down) {
+                if (!followCurrent) {
+                    followCurrent = true; markVideoMs = null; renderPanel()
+                } else closePanel()
+            }
+
+            else -> {
+                if (!Keys.isOk(e.keyCode)) return false
+                if (down && e.repeatCount == 0) syncOk()
+            }
+        }
+        return true
+    }
+
+    private fun nudge(d: Long) {
+        model.nudge(d)
+        saveModel()
+        renderPanel()
+    }
+
+    private fun currentCueIndex(): Int {
+        val s = sub ?: return 0
+        val t = model.cueTimeAt(videoNow() ?: 0L)
+        return s.indexAtOrBefore(t).coerceAtLeast(0)
+    }
+
+    private fun startMark() {
+        markVideoMs = videoNow()
+        followCurrent = false
+        cueSel = currentCueIndex()
+    }
+
+    private fun moveCue(dir: Int) {
+        val s = sub ?: return
+        if (s.cues.isEmpty()) return
+        if (followCurrent) startMark()
+        cueSel = (cueSel + dir).coerceIn(0, s.cues.lastIndex)
+        renderPanel()
+    }
+
+    private fun syncOk() {
+        val s = sub ?: return openFiles()
+        if (s.cues.isEmpty()) return
+        if (followCurrent) {
+            startMark()
+            flash("Моментът е запомнен. Изберете с ▲▼ репликата, която чухте, и натиснете OK.")
+            return
+        }
+        val mark = markVideoMs ?: videoNow() ?: return
+        val cue = s.cues[cueSel.coerceIn(0, s.cues.lastIndex)]
+        val r = model.anchor(cue.startMs, mark)
+        if (clock === manualClock) manualMeaningful = true
+        saveModel()
+        followCurrent = true
+        markVideoMs = null
+        flash(
+            if (r == SyncModel.Result.TWO_POINT)
+                "Синхрон по 2 точки: отместване ${SyncModel.formatOffset(model.offsetMs)}, скорост ${pct(model.scale)}"
+            else
+                "Синхронизирано: ${SyncModel.formatOffset(model.offsetMs)}. Ако по-късно пак се разминат, повторете – ще се изчисли и скоростта."
+        )
+    }
+
+    // ---------------------------------------------------------------- меню
+
+    private class MenuItem(
+        val label: () -> String,
+        val ok: (() -> Unit)? = null,
+        val adjust: ((Int) -> Unit)? = null,
+    )
+
+    private fun pct(scale: Double) = "%.2f%%".format(scale * 100)
+
+    private fun setScale(s: Double) {
+        model.setScaleKeeping(s, videoNow() ?: 0L)
+        saveModel()
+        flash("Скорост: ${pct(model.scale)}")
+    }
+
+    private val menu: List<MenuItem> by lazy {
+        listOf(
+            MenuItem({ "Скорост: ${pct(model.scale)}      ◀ ▶  ±0.05%" }, adjust = { d ->
+                model.setScaleKeeping(model.scale + d * 0.0005, videoNow() ?: 0L); saveModel()
+            }),
+            MenuItem({ "Субтитрите са за 25 fps, филмът е 23.976 fps  (×1.0427)" }, ok = { setScale(SyncModel.PAL_TO_FILM) }),
+            MenuItem({ "Субтитрите са за 23.976 fps, филмът е 25 fps  (×0.9590)" }, ok = { setScale(SyncModel.FILM_TO_PAL) }),
+            MenuItem({ "Скорост 100% (без промяна)" }, ok = { setScale(1.0) }),
+            MenuItem({ "Нулирай отместването и скоростта" }, ok = {
+                model.reset(prefs.defaultOffsetMs); saveModel(); flash("Нулирано")
+            }),
+            MenuItem({ "Запиши синхрона в .srt файла  (оригиналът остава като .bak)" }, ok = { saveToFile() }),
+            MenuItem({ "Избери друг .srt файл" }, ok = { openFiles() }),
+            MenuItem({ "Субтитри: " + if (subsEnabled) "показани" else "скрити" }, ok = { subsEnabled = !subsEnabled }),
+            MenuItem({ "Размер на текста: ${prefs.textSizeSp}      ◀ ▶" }, adjust = { d -> prefs.textSizeSp += 2 * d }),
+            MenuItem({ "Височина от долу: ${prefs.bottomMarginDp}      ◀ ▶" }, adjust = { d -> prefs.bottomMarginDp += 8 * d }),
+            MenuItem({
+                "Време от: " + if (prefs.forceManualClock) "ръчен часовник (принудително)" else "автоматично (сега: ${clock?.label ?: "—"})"
+            }, ok = { prefs.forceManualClock = !prefs.forceManualClock }),
+            MenuItem({
+                if (clock === manualClock) "Ръчен часовник: " + (if (manualClock.isPlaying()) "▶ върви – OK за пауза" else "⏸ на пауза – OK за пускане")
+                else "Пауза / пусни филма"
+            }, ok = {
+                val c = clock
+                if (c is SessionClock) c.togglePlay() else manualClock.toggle()
+            }),
+            MenuItem({ "Корекция на позицията от плейъра: ${prefs.calibrationMs} ms      ◀ ▶" }, adjust = { d ->
+                prefs.calibrationMs += 50L * d
+            }),
+            MenuItem({ "Затвори панела" }, ok = { closePanel(swallowKey = KeyEvent.KEYCODE_DPAD_CENTER) }),
+        )
+    }
+
+    private fun keyMenu(e: KeyEvent): Boolean {
+        val down = e.action == KeyEvent.ACTION_DOWN
+        when (e.keyCode) {
+            KeyEvent.KEYCODE_DPAD_UP -> if (down) menuSel = (menuSel - 1 + menu.size) % menu.size
+            KeyEvent.KEYCODE_DPAD_DOWN -> if (down) menuSel = (menuSel + 1) % menu.size
+            KeyEvent.KEYCODE_DPAD_LEFT -> if (down) menu[menuSel].adjust?.invoke(-1)
+            KeyEvent.KEYCODE_DPAD_RIGHT -> if (down) menu[menuSel].adjust?.invoke(+1)
+            KeyEvent.KEYCODE_BACK -> if (!down) openSync()
+            else -> {
+                if (!Keys.isOk(e.keyCode)) return false
+                if (down && e.repeatCount == 0) {
+                    val item = menu[menuSel]
+                    if (item.ok != null) {
+                        item.ok.invoke()
+                        if (page == Page.NONE) swallowUp = e.keyCode
+                    }
+                }
+            }
+        }
+        if (page != Page.NONE) renderPanel()
+        return true
+    }
+
+    // ---------------------------------------------------------------- файлове
+
+    private fun currentMetadata(): MediaMetadata? = (clock as? SessionClock)?.metadata
+
+    private fun metadataTitle(md: MediaMetadata?): String? =
+        md?.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE)?.takeIf { it.isNotBlank() }
+            ?: md?.getString(MediaMetadata.METADATA_KEY_TITLE)?.takeIf { it.isNotBlank() }
+
+    private fun metadataPath(md: MediaMetadata?): String? {
+        val raw = md?.getString(MediaMetadata.METADATA_KEY_MEDIA_URI)
+            ?: md?.getString(MediaMetadata.METADATA_KEY_MEDIA_ID) ?: return null
+        return when {
+            raw.startsWith("/") -> raw
+            raw.startsWith("file://") -> Uri.parse(raw).path
+            else -> null
+        }
+    }
+
+    /** Ако плейърът съобщава име на филм, различно от заредения .srt, предлагаме нов файл. */
+    private fun currentFileLooksWrong(): Boolean {
+        val f = sub?.file ?: return true
+        val title = metadataTitle(currentMetadata()) ?: return false
+        return FileBrowser.normalize(title).length >= 4 && !FileBrowser.matches(f, title)
+    }
+
+    private fun openFiles() {
+        page = Page.FILES
+        browser.recentDir = prefs.lastDir?.let { File(it) }
+        browser.suggestions = emptyList()
+        browser.open(null)
+        val md = currentMetadata()
+        val title = metadataTitle(md)
+        val path = metadataPath(md)
+        val extra = listOfNotNull(browser.recentDir)
+        Thread {
+            val found = try {
+                FileBrowser.findSuggestions(title, path, extra)
+            } catch (e: Exception) {
+                emptyList()
+            }
+            handler.post {
+                if (page == Page.FILES) {
+                    browser.suggestions = found
+                    renderPanel()
+                }
+            }
+        }.start()
+        renderPanel()
+    }
+
+    private fun keyFiles(e: KeyEvent): Boolean {
+        val down = e.action == KeyEvent.ACTION_DOWN
+        val n = browser.entries.size
+        when (e.keyCode) {
+            KeyEvent.KEYCODE_DPAD_UP -> if (down && n > 0) browser.sel = (browser.sel - 1).coerceAtLeast(0)
+            KeyEvent.KEYCODE_DPAD_DOWN -> if (down && n > 0) browser.sel = (browser.sel + 1).coerceAtMost(n - 1)
+            KeyEvent.KEYCODE_DPAD_LEFT -> if (down) browser.up()
+            KeyEvent.KEYCODE_BACK -> if (!down && !browser.up()) {
+                if (sub != null) openSync() else closePanel()
+            }
+
+            else -> {
+                if (!Keys.isOk(e.keyCode) && e.keyCode != KeyEvent.KEYCODE_DPAD_RIGHT) return false
+                if (down && e.repeatCount == 0) {
+                    val entry = browser.entries.getOrNull(browser.sel)
+                    when (entry?.kind) {
+                        FileBrowser.Kind.UP -> browser.up()
+                        FileBrowser.Kind.DIR -> entry.file?.let { browser.open(it) }
+                        FileBrowser.Kind.FILE, FileBrowser.Kind.SUGGESTION ->
+                            if (Keys.isOk(e.keyCode)) entry.file?.let { loadFile(it, quiet = false) }
+
+                        else -> {}
+                    }
+                }
+            }
+        }
+        if (page != Page.NONE) renderPanel()
+        return true
+    }
+
+    private fun loadFile(f: File, quiet: Boolean) {
+        try {
+            val s = Srt.load(f)
+            sub = s
+            model = prefs.loadModel(f.absolutePath) ?: SyncModel(prefs.defaultOffsetMs, 1.0)
+            prefs.lastFile = f.absolutePath
+            prefs.lastDir = f.parent
+            followCurrent = true
+            markVideoMs = null
+            if (clock === manualClock) {
+                manualClock.restart()
+                manualMeaningful = false
+            }
+            if (!quiet) {
+                openSync()
+                flash(
+                    if (s.cues.isEmpty()) "Във файла няма разпознати реплики: ${f.name}"
+                    else "Зареден: ${f.name} (${s.cues.size} реплики, ${s.charset.name()})"
+                )
+            }
+        } catch (e: Exception) {
+            if (!quiet) flash("Грешка при четене на ${f.name}: ${e.message}")
+        }
+    }
+
+    private fun saveModel() {
+        val path = sub?.file?.absolutePath ?: return
+        prefs.saveModel(path, model)
+    }
+
+    private fun saveToFile() {
+        val s = sub ?: return
+        val f = s.file ?: return
+        try {
+            Srt.saveShifted(s, model.scale, model.offsetMs)
+            sub = Srt.load(f)
+            model = SyncModel(0, 1.0)
+            saveModel()
+            flash("Записано в ${f.name}. Оригиналът е запазен като ${f.name}.bak")
+        } catch (e: Exception) {
+            flash("Неуспешен запис: ${e.message}")
+        }
+    }
+
+    // ---------------------------------------------------------------- панел
+
+    private fun oneLine(t: String, max: Int = 90): String {
+        val s = SubtitleView.toSpanned(t).toString().replace('\n', ' ').trim()
+        return if (s.length > max) s.take(max - 1) + "…" else s
+    }
+
+    private fun renderPanel() {
+        val p = panelView ?: return
+        if (page == Page.NONE) return
+        lastPanelRender = SystemClock.uptimeMillis()
+        if (SystemClock.uptimeMillis() > statusUntil) status = ""
+        val hot = Keys.name(prefs.hotkey)
+        when (page) {
+            Page.SYNC -> renderSync(p, hot)
+            Page.MENU -> {
+                val rows = window(menu.size, menuSel) { i -> PanelView.Row(menu[i].label(), selected = i == menuSel) }
+                p.show(
+                    "Меню", sub?.file?.name ?: "",
+                    rows,
+                    "▲▼ избор   ◀ ▶ промяна   OK изпълни   BACK или [$hot] назад",
+                    status,
+                )
+            }
+
+            Page.FILES -> {
+                val rows = window(browser.entries.size, browser.sel) { i ->
+                    PanelView.Row(browser.entries[i].label, selected = i == browser.sel)
+                }
+                p.show(
+                    "Изберете .srt файл",
+                    browser.dir?.absolutePath ?: "Предложения (★) и устройства",
+                    rows,
+                    "▲▼ избор   OK отвори   ◀ или BACK нагоре   [$hot] отказ",
+                    status,
+                )
+            }
+
+            Page.NONE -> {}
+        }
+    }
+
+    private fun renderSync(p: PanelView, hot: String) {
+        val s = sub
+        val v = videoNow()
+        val c = clock
+        val playing = c?.isPlaying() == true
+        val header = "Отместване: ${SyncModel.formatOffset(model.offsetMs)}    Скорост: ${pct(model.scale)}"
+        val info = buildString {
+            append("Филм: ").append(if (v != null) SyncModel.formatClock(v) else "—")
+            append(if (playing) " ▶" else " ⏸")
+            append("   Време от: ").append(c?.label ?: "—")
+            s?.file?.let { append("   ").append(it.name) }
+        }
+        val rows = ArrayList<PanelView.Row>()
+        if (s != null && s.cues.isNotEmpty()) {
+            val t = if (v != null) model.cueTimeAt(v) else 0L
+            val activeIdx = s.indexAtOrBefore(t)
+            val center = if (followCurrent) activeIdx.coerceAtLeast(0) else cueSel
+            val from = (center - 3).coerceAtLeast(0)
+            val to = (from + 6).coerceAtMost(s.cues.lastIndex)
+            for (i in from..to) {
+                val cue = s.cues[i]
+                val isActive = cue.startMs <= t && t < cue.endMs
+                val time = SyncModel.formatClock(model.videoTimeOf(cue.startMs))
+                val prefix = if (isActive) "▶ " else "   "
+                rows.add(
+                    PanelView.Row(
+                        "$prefix$time   ${oneLine(cue.text)}",
+                        selected = !followCurrent && i == cueSel,
+                        active = isActive,
+                    )
+                )
+            }
+        } else {
+            rows.add(PanelView.Row("(няма заредени субтитри – натиснете OK, за да изберете файл)"))
+        }
+        val hint = if (followCurrent) {
+            "◀ ▶ по-рано / по-късно (задръжте = по-бързо)   ▲▼ или OK – синхрон по реплика   [$hot] меню   BACK затвори"
+        } else {
+            val m = markVideoMs?.let { SyncModel.formatClock(it) } ?: "—"
+            "Запомнен момент $m → изберете с ▲▼ чутата реплика и натиснете OK   BACK отказ"
+        }
+        p.show(header, info, rows, hint, status)
+    }
+
+    private fun window(size: Int, sel: Int, make: (Int) -> PanelView.Row): List<PanelView.Row> {
+        if (size == 0) return emptyList()
+        val n = PanelView.MAX_ROWS
+        val from = (sel - n / 2).coerceIn(0, (size - n).coerceAtLeast(0))
+        val to = (from + n - 1).coerceAtMost(size - 1)
+        return (from..to).map(make)
+    }
+
+    companion object {
+        private const val TAG = "SubSync"
+
+        @Volatile
+        var running = false
+            private set
+    }
+}

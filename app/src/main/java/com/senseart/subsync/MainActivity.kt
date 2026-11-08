@@ -1,0 +1,239 @@
+package com.senseart.subsync
+
+import android.app.Activity
+import android.content.Intent
+import android.content.SharedPreferences
+import android.graphics.Color
+import android.graphics.Typeface
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
+import android.util.TypedValue
+import android.view.KeyEvent
+import android.view.View
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
+
+/** Екран с настройки: разрешения, бутон за панела, вид на субтитрите. */
+class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListener {
+
+    private lateinit var prefs: Prefs
+    private lateinit var root: LinearLayout
+    private lateinit var a11yStatus: TextView
+    private lateinit var notifStatus: TextView
+    private lateinit var filesStatus: TextView
+    private lateinit var hotkeyLabel: TextView
+    private lateinit var sizeLabel: TextView
+    private lateinit var marginLabel: TextView
+    private lateinit var defOffsetLabel: TextView
+    private lateinit var calibLabel: TextView
+    private lateinit var okPauseBtn: Button
+    private lateinit var manualBtn: Button
+
+    private fun dp(v: Int) =
+        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        prefs = Prefs(this)
+        root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(48), dp(24), dp(48), dp(24))
+        }
+        val scroll = ScrollView(this).apply {
+            setBackgroundColor(0xFF101418.toInt())
+            addView(root)
+        }
+        setContentView(scroll)
+
+        text("Subtitle Synchronizer", 26f, Color.WHITE, bold = true)
+        text(
+            "Показва субтитри от .srt файл над картината на ViMu и позволява да ги синхронизирате " +
+                "с дистанционното, докато филмът върви. Във ViMu изключете неговите субтитри, " +
+                "за да не се виждат двойно.",
+            15f, 0xFFB0B8C0.toInt(),
+        )
+
+        section("1. Разрешения (еднократно)")
+        a11yStatus = text("", 16f, Color.WHITE)
+        button("Отвори „Достъпност“") { open(Settings.ACTION_ACCESSIBILITY_SETTINGS) }
+        notifStatus = text("", 16f, Color.WHITE)
+        button("Отвори „Достъп до известия“") { open(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS) }
+        filesStatus = text("", 16f, Color.WHITE)
+        button("Отвори „Достъп до всички файлове“") {
+            if (!open(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName")))
+                open(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+        }
+        text(
+            "Ако някой от бутоните не отваря нищо или „Достъпност“ е забранена (Android 13+ блокира " +
+                "ръчно инсталирани приложения), изпълнете от компютъра:",
+            14f, 0xFFB0B8C0.toInt(),
+        )
+        text(ADB_COMMANDS.trimIndent(), 13f, 0xFF9FD3FF.toInt(), mono = true)
+
+        section("2. Бутон за панела")
+        hotkeyLabel = text("", 16f, Color.WHITE)
+        button("Задай бутон") {
+            prefs.learning = true
+            updateLabels()
+        }
+        text(
+            "Изберете бутон, който не ползвате във ViMu (напр. цветен бутон, „Меню“, „Настройки“ или " +
+                "цифра). С него отваряте панела над филма.",
+            14f, 0xFFB0B8C0.toInt(),
+        )
+
+        section("3. Вид на субтитрите")
+        sizeLabel = text("", 16f, Color.WHITE)
+        row(button("Размер −") { prefs.textSizeSp -= 2 }, button("Размер +") { prefs.textSizeSp += 2 })
+        marginLabel = text("", 16f, Color.WHITE)
+        row(button("По-ниско") { prefs.bottomMarginDp -= 8 }, button("По-високо") { prefs.bottomMarginDp += 8 })
+
+        section("4. Допълнителни")
+        defOffsetLabel = text("", 16f, Color.WHITE)
+        row(
+            button("−0.5 с") { prefs.defaultOffsetMs -= 500 },
+            button("+0.5 с") { prefs.defaultOffsetMs += 500 },
+        )
+        calibLabel = text("", 16f, Color.WHITE)
+        row(
+            button("−50 ms") { prefs.calibrationMs -= 50 },
+            button("+50 ms") { prefs.calibrationMs += 50 },
+        )
+        manualBtn = button("") { prefs.forceManualClock = !prefs.forceManualClock }
+        okPauseBtn = button("") { prefs.okPausesPlayer = !prefs.okPausesPlayer }
+
+        section("Как се ползва")
+        text(HELP.trimIndent(), 15f, 0xFFD0D6DC.toInt())
+        text("Версия ${packageManager.getPackageInfo(packageName, 0).versionName}", 13f, 0xFF707880.toInt())
+    }
+
+    override fun onResume() {
+        super.onResume()
+        prefs.sp.registerOnSharedPreferenceChangeListener(this)
+        updateLabels()
+    }
+
+    override fun onPause() {
+        prefs.sp.unregisterOnSharedPreferenceChangeListener(this)
+        super.onPause()
+    }
+
+    override fun onStop() {
+        prefs.learning = false
+        super.onStop()
+    }
+
+    override fun onSharedPreferenceChanged(sp: SharedPreferences?, key: String?) = updateLabels()
+
+    /** Ако услугата още не е включена, бутонът се хваща тук. */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (prefs.learning && !Keys.isForbiddenHotkey(keyCode)) {
+            prefs.hotkey = keyCode
+            prefs.learning = false
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    private fun updateLabels() {
+        val a11y = isAccessibilityOn()
+        a11yStatus.text = mark(a11y) + "Достъпност (показване над плейъра и бутоните)" +
+            if (a11y && !SubSyncService.running) " – включена, стартира се…" else ""
+        notifStatus.text = mark(isNotificationAccessOn()) +
+            "Достъп до известия (позицията на филма от ViMu; без него – ръчен часовник)"
+        filesStatus.text = mark(hasFilesAccess()) + "Достъп до всички файлове (четене и запис на .srt)"
+        hotkeyLabel.text = if (prefs.learning) "Натиснете сега бутона на дистанционното…"
+        else "Бутон за панела: ${Keys.name(prefs.hotkey)}"
+        sizeLabel.text = "Размер на текста: ${prefs.textSizeSp}"
+        marginLabel.text = "Височина от долния край: ${prefs.bottomMarginDp}"
+        defOffsetLabel.text = "Отместване по подразбиране за нови файлове: ${SyncModel.formatOffset(prefs.defaultOffsetMs)}"
+        calibLabel.text = "Корекция на позицията от плейъра: ${prefs.calibrationMs} ms"
+        manualBtn.text = "Време от: " + if (prefs.forceManualClock) "винаги ръчен часовник" else "автоматично"
+        okPauseBtn.text = "OK слага пауза във ViMu (за ръчния часовник): " + if (prefs.okPausesPlayer) "да" else "не"
+    }
+
+    private fun mark(ok: Boolean) = if (ok) "✅  " else "❌  "
+
+    private fun isAccessibilityOn(): Boolean {
+        val s = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: ""
+        return s.split(':').any { it.startsWith("$packageName/") }
+    }
+
+    private fun isNotificationAccessOn(): Boolean {
+        val s = Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: ""
+        return s.split(':').any { it.startsWith("$packageName/") }
+    }
+
+    private fun hasFilesAccess() =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) Environment.isExternalStorageManager() else true
+
+    private fun open(action: String, data: Uri? = null): Boolean = try {
+        startActivity(Intent(action).apply { if (data != null) this.data = data })
+        true
+    } catch (e: Exception) {
+        false
+    }
+
+    // ---------------------------------------------------------------- малки помощници за UI
+
+    private fun text(s: String, size: Float, color: Int, bold: Boolean = false, mono: Boolean = false) =
+        TextView(this).apply {
+            text = s
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, size)
+            setTextColor(color)
+            if (bold) setTypeface(typeface, Typeface.BOLD)
+            if (mono) {
+                typeface = Typeface.MONOSPACE
+                setTextIsSelectable(true)
+            }
+            setPadding(0, dp(4), 0, dp(4))
+            root.addView(this)
+        }
+
+    private fun section(title: String) {
+        val v = text(title, 20f, 0xFFFFD76A.toInt(), bold = true)
+        v.setPadding(0, dp(20), 0, dp(4))
+    }
+
+    private fun button(label: String, onClick: () -> Unit) = Button(this).apply {
+        text = label
+        isAllCaps = false
+        setOnClickListener { onClick() }
+        root.addView(this, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+    }
+
+    private fun row(vararg views: View) {
+        val r = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for (v in views) {
+            root.removeView(v)
+            r.addView(v)
+        }
+        root.addView(r)
+    }
+
+    companion object {
+        const val ADB_COMMANDS = """
+            adb shell appops set com.senseart.subsync ACCESS_RESTRICTED_SETTINGS allow
+            adb shell appops set com.senseart.subsync MANAGE_EXTERNAL_STORAGE allow
+            adb shell cmd notification allow_listener com.senseart.subsync/com.senseart.subsync.MediaListenerService
+            adb shell settings put secure enabled_accessibility_services com.senseart.subsync/com.senseart.subsync.SubSyncService
+            adb shell settings put secure accessibility_enabled 1
+        """
+
+        const val HELP = """
+            • Пуснете филма във ViMu (с изключени субтитри) и натиснете бутона за панела.
+            • Първия път изберете .srt файла. Приложението предлага файлове със същото име като филма (★).
+            • ◀ ▶ – субтитрите по-рано / по-късно с 0.1 с. Задръжте за 1 с, после 10 с на стъпка.
+            • Синхрон по реплика: щом чуете реплика, натиснете OK (моментът се запомня), изберете с ▲▼ тази реплика в списъка и натиснете OK. Отместването се изчислява само.
+            • Ако разликата расте с времето, повторете синхрона по реплика по-късно във филма – тогава се изчислява и скоростта. Или в менюто изберете 25 ↔ 23.976 fps.
+            • Бутонът за панела още веднъж отваря менюто (скорост, запис в .srt, друг файл, размер, пауза).
+            • BACK затваря панела. Докато панелът е затворен, всички бутони работят нормално във ViMu.
+            • Настройката се помни за всеки .srt файл. „Запиши в .srt“ записва синхрона в самия файл (оригиналът остава като .bak).
+        """
+    }
+}
