@@ -38,6 +38,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     private lateinit var calibLabel: TextView
     private lateinit var okPauseBtn: Button
     private lateinit var manualBtn: Button
+    private lateinit var holdBtn: Button
     private lateinit var sharesBox: LinearLayout
 
     private fun dp(v: Int) =
@@ -96,9 +97,12 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
             prefs.learning = true
             updateLabels()
         }
+        holdBtn = button("") { prefs.holdHotkey = !prefs.holdHotkey }
         text(
-            "Изберете бутон, който не ползвате във ViMu (напр. цветен бутон, „Меню“, „Настройки“ или " +
-                "цифра). С него отваряте панела над филма.",
+            "Със задържане: задръжте бутона ~1 секунда, за да отворите панела. Краткото натискане " +
+                "си остава с нормалната функция във ViMu. Най-чисто работи с OK или BACK – при тях " +
+                "краткото натискане стига до ViMu съвсем нормално. При другите бутони ViMu може " +
+                "да усети и началото на задържането.",
             14f, 0xFFB0B8C0.toInt(),
         )
 
@@ -168,7 +172,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
 
     /** Ако услугата още не е включена, бутонът се хваща тук. */
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        if (prefs.learning && !Keys.isForbiddenHotkey(keyCode)) {
+        if (prefs.learning && !Keys.isForbiddenHotkey(keyCode, prefs.holdHotkey)) {
             prefs.hotkey = keyCode
             prefs.learning = false
             return true
@@ -396,6 +400,8 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         filesStatus.text = mark(hasFilesAccess()) + "Достъп до всички файлове (четене и запис на .srt)"
         hotkeyLabel.text = if (prefs.learning) "Натиснете сега бутона на дистанционното…"
         else "Бутон за панела: ${Keys.name(prefs.hotkey)}"
+        holdBtn.text = "Отваряне на панела: " +
+            if (prefs.holdHotkey) "със задържане на бутона" else "с кратко натискане"
         sizeLabel.text = "Размер на текста: ${prefs.textSizeSp}"
         marginLabel.text = "Височина от долния край: ${prefs.bottomMarginDp}"
         defOffsetLabel.text = "Отместване по подразбиране за нови файлове: ${SyncModel.formatOffset(prefs.defaultOffsetMs)}"
@@ -475,10 +481,11 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         const val HELP = """
             • Отворете филма от файловия мениджър (с „Отвори с → Subtitle Synchronizer“). Филмът тръгва във ViMu, а приложението само намира .srt до него (или в подпапка Subs) и показва субтитрите.
             • Ако не намери файла, натиснете бутона за панела и го изберете – от устройствата или от мрежовите папки. Предложенията със същото име като филма са отбелязани с ★.
+            • Задръжте бутона за панела (~1 с), за да го отворите. Краткото натискане работи нормално във ViMu.
             • ◀ ▶ – субтитрите по-рано / по-късно с 0.1 с. Задръжте за 1 с, после 10 с на стъпка.
             • Синхрон по реплика: щом чуете реплика, натиснете OK (моментът се запомня), изберете с ▲▼ тази реплика в списъка и натиснете OK. Отместването се изчислява само.
             • Ако разликата расте с времето, повторете синхрона по реплика по-късно във филма – тогава се изчислява и скоростта. Или в менюто изберете 25 ↔ 23.976 fps.
-            • Бутонът за панела още веднъж отваря менюто (скорост, запис в .srt, друг файл, размер, пауза).
+            • Бутонът за панела (задържан) още веднъж отваря менюто (скорост, запис в .srt, друг файл, размер, пауза).
             • BACK затваря панела. Докато панелът е затворен, всички бутони работят нормално във ViMu.
             • Настройката се помни за всеки .srt файл. „Запиши в .srt“ записва синхрона в самия файл (оригиналът остава като .bak).
         """

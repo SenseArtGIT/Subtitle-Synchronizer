@@ -288,13 +288,23 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             swallowUp = -1
             return true
         }
+        // Бутон, който сами „натиснахме“ (кратко натискане при режим „задържане“) – пропускаме го.
+        if (code == replayKey && SystemClock.uptimeMillis() < replayUntil) {
+            if (e.action == KeyEvent.ACTION_UP) replayKey = -1
+            return false
+        }
         if (prefs.learning) return learnKey(e)
 
         val hot = prefs.hotkey
         if (hot != 0 && code == hot) {
+            if (prefs.holdHotkey) return holdHotkey(e)
             if (e.action == KeyEvent.ACTION_UP) onHotkey()
             return true
         }
+        return dispatchToPage(e)
+    }
+
+    private fun dispatchToPage(e: KeyEvent): Boolean {
         return when (page) {
             Page.NONE -> {
                 observePlayerKey(e); false
@@ -306,14 +316,70 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         }
     }
 
+    // ---------------------------------------------------------------- задържане на бутона
+
+    private var holdConsumed = false
+    private var holdFired = false
+    private var holdEvent: KeyEvent? = null
+    private var replayKey = -1
+    private var replayUntil = 0L
+
+    private val holdRunnable = Runnable {
+        holdFired = true
+        onHotkey()
+    }
+
+    /**
+     * Режим „задържане“: задържане ~0.7 с отваря панела (или менюто, ако панелът е отворен).
+     * Кратко натискане:
+     *  - OK/BACK: изяждаме го и веднага го „натискаме“ сами – плейърът получава нормален бутон;
+     *  - други бутони (Android не позволява да ги натиснем сами): пропускаме натискането към плейъра,
+     *    а при задържане отваряме панела и изяждаме остатъка.
+     *  - докато панелът е отворен, краткото натискане действа като в панела.
+     */
+    private fun holdHotkey(e: KeyEvent): Boolean {
+        when (e.action) {
+            KeyEvent.ACTION_DOWN -> {
+                if (e.repeatCount > 0) return holdConsumed || holdFired
+                holdFired = false
+                holdEvent = e
+                holdConsumed = page != Page.NONE || Keys.replayAction(e.keyCode) != null
+                handler.removeCallbacks(holdRunnable)
+                handler.postDelayed(holdRunnable, HOLD_MS)
+                return holdConsumed
+            }
+
+            KeyEvent.ACTION_UP -> {
+                handler.removeCallbacks(holdRunnable)
+                if (holdFired) {
+                    holdFired = false
+                    return true
+                }
+                if (!holdConsumed) return false
+                holdConsumed = false
+                if (page != Page.NONE) {
+                    val down = holdEvent ?: e
+                    dispatchToPage(KeyEvent.changeAction(down, KeyEvent.ACTION_DOWN))
+                    dispatchToPage(e)
+                } else {
+                    replay(e.keyCode)
+                }
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun replay(code: Int) {
+        val action = Keys.replayAction(code) ?: return
+        replayKey = if (Keys.isOk(code)) KeyEvent.KEYCODE_DPAD_CENTER else code
+        replayUntil = SystemClock.uptimeMillis() + 800
+        performGlobalAction(action)
+    }
+
     private fun learnKey(e: KeyEvent): Boolean {
         if (e.action != KeyEvent.ACTION_UP) return true
-        if (e.keyCode == KeyEvent.KEYCODE_BACK) {
-            prefs.learning = false
-            Toast.makeText(this, "Изборът на бутон е отменен", Toast.LENGTH_SHORT).show()
-            return true
-        }
-        if (Keys.isForbiddenHotkey(e.keyCode)) {
+        if (Keys.isForbiddenHotkey(e.keyCode, prefs.holdHotkey)) {
             Toast.makeText(this, "Този бутон е нужен за управлението – изберете друг", Toast.LENGTH_SHORT).show()
             return true
         }
@@ -708,7 +774,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
                     best != null -> loadFile(best, quiet = true, announce = true)
                     strict -> {
                         sub = null
-                        flash("Не намерих .srt за „$videoName“. Натиснете [${Keys.name(prefs.hotkey)}], за да изберете файл.")
+                        flash("Не намерих .srt за „$videoName“. Задръжте [${Keys.name(prefs.hotkey)}], за да изберете файл.")
                     }
                 }
             }
@@ -868,6 +934,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
     companion object {
         private const val TAG = "SubSync"
+        private const val HOLD_MS = 700L
 
         @Volatile
         var running = false

@@ -96,6 +96,11 @@ class Prefs(context: Context) {
     val currentVideoData: String? get() = sp.getString(K_VIDEO_DATA, null)
     val currentVideoAt: Long get() = sp.getLong(K_VIDEO_AT, 0)
 
+    /** Панелът се отваря със задържане на бутона; краткото натискане си върши нормалната работа. */
+    var holdHotkey: Boolean
+        get() = sp.getBoolean(K_HOLD, true)
+        set(v) = sp.edit().putBoolean(K_HOLD, v).apply()
+
     fun loadModel(path: String): SyncModel? {
         if (!sp.contains("off:$path")) return null
         val off = sp.getLong("off:$path", 0)
@@ -121,6 +126,7 @@ class Prefs(context: Context) {
         const val K_FORCE_MANUAL = "force_manual"
         const val K_OK_PAUSES = "ok_pauses"
         const val K_SHARES = "smb_shares"
+        const val K_HOLD = "hold_hotkey"
         const val K_VIDEO_URI = "video_uri"
         const val K_VIDEO_NAME = "video_name"
         const val K_VIDEO_DATA = "video_data"
