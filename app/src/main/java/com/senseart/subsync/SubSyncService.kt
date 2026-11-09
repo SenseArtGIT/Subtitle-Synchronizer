@@ -20,7 +20,7 @@ import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.widget.Toast
-import java.io.File
+import java.util.concurrent.Executors
 
 /**
  * Сърцето на приложението. Работи като услуга за достъпност, защото само така може:
@@ -32,6 +32,9 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private lateinit var prefs: Prefs
     private lateinit var wm: WindowManager
     private val handler = Handler(Looper.getMainLooper())
+
+    /** Четене/запис на файлове (може по мрежата) – една нишка, за да вървят по ред. */
+    private val io = Executors.newSingleThreadExecutor()
 
     private var subtitleView: SubtitleView? = null
     private var subtitleParams: WindowManager.LayoutParams? = null
@@ -62,6 +65,11 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private var swallowUp = -1
     private var lastPanelRender = 0L
     private var lastClockCheck = 0L
+    private var browseToken = 0
+
+    /** Последният филм, за който сме търсили .srt, и намерените кандидати. */
+    private var lastAutoKey: String? = null
+    private var autoCandidates: List<VFile> = emptyList()
 
     // ---------------------------------------------------------------- жизнен цикъл
 
@@ -78,7 +86,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         }
         addSubtitleWindow()
         refreshClock()
-        prefs.lastFile?.let { File(it) }?.takeIf { it.isFile }?.let { loadFile(it, quiet = true) }
+        prefs.lastFile?.let { SubtitleLocator.fromPath(it, prefs.shares) }?.let { loadFile(it, quiet = true) }
         handler.post(tick)
     }
 
@@ -96,6 +104,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         if (!running) return
         running = false
         handler.removeCallbacksAndMessages(null)
+        io.shutdownNow()
         try {
             sessionManager?.removeOnActiveSessionsChangedListener(sessionsListener)
         } catch (_: Exception) {
@@ -135,6 +144,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             }
 
             Prefs.K_FORCE_MANUAL -> refreshClock()
+            Prefs.K_VIDEO_AT -> onVideoOpened()
         }
     }
 
@@ -200,7 +210,11 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             if (c != null) {
                 if (old is SessionClock && old.controller.sessionToken == c.sessionToken && old.positionMs() != null) return
                 val sc = SessionClock(c, handler) { prefs.calibrationMs }
-                if (sc.positionMs() != null) next = sc else sc.release()
+                if (sc.positionMs() != null) {
+                    next = sc
+                    sc.onMetadata = { onPlayerMetadata(it) }
+                    onPlayerMetadata(sc.metadata)
+                } else sc.release()
             }
         }
         if (next == null) {
@@ -530,32 +544,61 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private fun currentFileLooksWrong(): Boolean {
         val f = sub?.file ?: return true
         val title = metadataTitle(currentMetadata()) ?: return false
-        return FileBrowser.normalize(title).length >= 4 && !FileBrowser.matches(f, title)
+        return SubtitleLocator.normalize(title).length >= 4 && !SubtitleLocator.matches(f.name, title)
     }
 
     private fun openFiles() {
         page = Page.FILES
-        browser.recentDir = prefs.lastDir?.let { File(it) }
-        browser.suggestions = emptyList()
-        browser.open(null)
+        browse(null)
+        // Допълнителни предложения по името на филма, който плейърът съобщава.
         val md = currentMetadata()
-        val title = metadataTitle(md)
-        val path = metadataPath(md)
-        val extra = listOfNotNull(browser.recentDir)
+        val title = metadataTitle(md) ?: return
+        val uri = md?.getString(MediaMetadata.METADATA_KEY_MEDIA_URI)
+            ?: md?.getString(MediaMetadata.METADATA_KEY_MEDIA_ID)
+        if (autoCandidates.isNotEmpty() && SubtitleLocator.normalize(title) == lastAutoKey) return
+        val shares = prefs.shares
+        val recent = recentDir(shares)
         Thread {
-            val found = try {
-                FileBrowser.findSuggestions(title, path, extra)
-            } catch (e: Exception) {
-                emptyList()
-            }
+            val found = findFor(uri, null, title, shares, recent)
             handler.post {
-                if (page == Page.FILES) {
-                    browser.suggestions = found
-                    renderPanel()
+                if (found.isNotEmpty() && page == Page.FILES && browser.dir == null) {
+                    autoCandidates = found
+                    browse(null)
                 }
             }
         }.start()
+    }
+
+    private fun recentDir(shares: List<SmbShare>): VFile? =
+        prefs.lastDir?.let { SubtitleLocator.fromPath(it, shares) }
+
+    /** Показва папка [d] (null = началният екран). Съдържанието се зарежда на заден план. */
+    private fun browse(d: VFile?, selectPath: String? = null) {
+        val token = ++browseToken
+        browser.showLoading(d)
         renderPanel()
+        val sugg = autoCandidates
+        val shares = prefs.shares
+        val recent = recentDir(shares)
+        io.execute {
+            val list = try {
+                FileBrowser.build(d, sugg, recent, shares)
+            } catch (e: Exception) {
+                listOf(FileBrowser.Entry(null, "Грешка: ${e.message}", FileBrowser.Kind.INFO))
+            }
+            handler.post {
+                if (token == browseToken && page == Page.FILES) {
+                    browser.show(d, list, selectPath)
+                    renderPanel()
+                }
+            }
+        }
+    }
+
+    private fun browseUp(): Boolean {
+        val d = browser.dir ?: return false
+        browse(if (FileBrowser.isRoot(d)) null else d.parent, d.path)
+        return true
     }
 
     private fun keyFiles(e: KeyEvent): Boolean {
@@ -564,8 +607,8 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         when (e.keyCode) {
             KeyEvent.KEYCODE_DPAD_UP -> if (down && n > 0) browser.sel = (browser.sel - 1).coerceAtLeast(0)
             KeyEvent.KEYCODE_DPAD_DOWN -> if (down && n > 0) browser.sel = (browser.sel + 1).coerceAtMost(n - 1)
-            KeyEvent.KEYCODE_DPAD_LEFT -> if (down) browser.up()
-            KeyEvent.KEYCODE_BACK -> if (!down && !browser.up()) {
+            KeyEvent.KEYCODE_DPAD_LEFT -> if (down) browseUp()
+            KeyEvent.KEYCODE_BACK -> if (!down && !browseUp()) {
                 if (sub != null) openSync() else closePanel()
             }
 
@@ -574,8 +617,8 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
                 if (down && e.repeatCount == 0) {
                     val entry = browser.entries.getOrNull(browser.sel)
                     when (entry?.kind) {
-                        FileBrowser.Kind.UP -> browser.up()
-                        FileBrowser.Kind.DIR -> entry.file?.let { browser.open(it) }
+                        FileBrowser.Kind.UP -> browseUp()
+                        FileBrowser.Kind.DIR -> entry.file?.let { browse(it) }
                         FileBrowser.Kind.FILE, FileBrowser.Kind.SUGGESTION ->
                             if (Keys.isOk(e.keyCode)) entry.file?.let { loadFile(it, quiet = false) }
 
@@ -588,47 +631,135 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         return true
     }
 
-    private fun loadFile(f: File, quiet: Boolean) {
-        try {
-            val s = Srt.load(f)
-            sub = s
-            model = prefs.loadModel(f.absolutePath) ?: SyncModel(prefs.defaultOffsetMs, 1.0)
-            prefs.lastFile = f.absolutePath
-            prefs.lastDir = f.parent
-            followCurrent = true
-            markVideoMs = null
-            if (clock === manualClock) {
-                manualClock.restart()
-                manualMeaningful = false
+    // ---------------------------------------------------------------- следване на филма
+
+    /**
+     * Търси .srt за филма: първо до самия файл (ако адресът му е разпознат),
+     * после по име в последната папка и във всички устройства и мрежови папки.
+     */
+    private fun findFor(
+        uri: String?, dataPath: String?, videoName: String,
+        shares: List<SmbShare>, recent: VFile?,
+    ): List<VFile> = try {
+        val video = SubtitleLocator.resolveVideo(uri, dataPath, shares)
+        var found = if (video != null) SubtitleLocator.siblings(video) else emptyList()
+        if (found.isEmpty()) {
+            found = SubtitleLocator.searchByName(videoName, listOfNotNull(recent?.parent, recent))
+        }
+        if (found.isEmpty()) {
+            found = SubtitleLocator.searchByName(videoName, FileBrowser.allRoots(shares))
+        }
+        found
+    } catch (e: Exception) {
+        Log.w(TAG, "findFor", e)
+        emptyList()
+    }
+
+    /** Файловият мениджър току-що отвори филм през нас (OpenVideoActivity). */
+    private fun onVideoOpened() {
+        val uri = prefs.currentVideoUri ?: return
+        val name = prefs.currentVideoName ?: SubtitleLocator.nameFromUri(uri)
+        if (clock === manualClock) {
+            manualClock.restart()
+            manualMeaningful = false
+        }
+        autoLocate(uri, prefs.currentVideoData, name, strict = true)
+    }
+
+    /** Плейърът смени филма (напр. пуснат е от собствения му браузър). */
+    private fun onPlayerMetadata(md: MediaMetadata?) {
+        val title = metadataTitle(md) ?: return
+        // Ако филмът е отворен през нас преди малко, вече знаем точния файл.
+        if (System.currentTimeMillis() - prefs.currentVideoAt < 30_000) return
+        val uri = md?.getString(MediaMetadata.METADATA_KEY_MEDIA_URI)
+            ?: md?.getString(MediaMetadata.METADATA_KEY_MEDIA_ID)
+        autoLocate(uri, null, title, strict = false)
+    }
+
+    /**
+     * [strict] = знаем със сигурност, че е пуснат нов филм: ако няма .srt за него,
+     * махаме старите субтитри, за да не се показват чужди.
+     */
+    private fun autoLocate(uri: String?, dataPath: String?, videoName: String, strict: Boolean) {
+        val key = SubtitleLocator.normalize(videoName)
+        if (key.length < 3) return
+        if (key == lastAutoKey && sub != null) return
+        lastAutoKey = key
+        autoCandidates = emptyList()
+        val shares = prefs.shares
+        val recent = recentDir(shares)
+        Thread {
+            val found = findFor(uri, dataPath, videoName, shares, recent)
+            handler.post {
+                if (lastAutoKey != key) return@post
+                autoCandidates = found
+                val best = found.firstOrNull()
+                when {
+                    best != null && sub?.file?.path == best.path -> {}
+                    best != null -> loadFile(best, quiet = true, announce = true)
+                    strict -> {
+                        sub = null
+                        flash("Не намерих .srt за „$videoName“. Натиснете [${Keys.name(prefs.hotkey)}], за да изберете файл.")
+                    }
+                }
             }
-            if (!quiet) {
-                openSync()
-                flash(
-                    if (s.cues.isEmpty()) "Във файла няма разпознати реплики: ${f.name}"
-                    else "Зареден: ${f.name} (${s.cues.size} реплики, ${s.charset.name()})"
-                )
+        }.start()
+    }
+
+    // ---------------------------------------------------------------- зареждане и запис
+
+    private fun loadFile(f: VFile, quiet: Boolean, announce: Boolean = !quiet) {
+        io.execute {
+            val res = runCatching { Srt.load(f) }
+            handler.post {
+                res.onSuccess { applyLoaded(f, it, quiet, announce) }
+                    .onFailure { if (announce) flash("Грешка при четене на ${f.name}: ${it.message}") }
             }
-        } catch (e: Exception) {
-            if (!quiet) flash("Грешка при четене на ${f.name}: ${e.message}")
+        }
+    }
+
+    private fun applyLoaded(f: VFile, s: SubtitleFile, quiet: Boolean, announce: Boolean) {
+        sub = s
+        model = prefs.loadModel(f.path) ?: SyncModel(prefs.defaultOffsetMs, 1.0)
+        prefs.lastFile = f.path
+        prefs.lastDir = f.parent?.path
+        followCurrent = true
+        markVideoMs = null
+        if (!quiet) openSync()
+        if (announce) {
+            flash(
+                if (s.cues.isEmpty()) "Във файла няма разпознати реплики: ${f.name}"
+                else "Субтитри: ${f.name} (${s.cues.size} реплики, ${s.charset.name()})"
+            )
         }
     }
 
     private fun saveModel() {
-        val path = sub?.file?.absolutePath ?: return
+        val path = sub?.file?.path ?: return
         prefs.saveModel(path, model)
     }
 
     private fun saveToFile() {
         val s = sub ?: return
         val f = s.file ?: return
-        try {
-            Srt.saveShifted(s, model.scale, model.offsetMs)
-            sub = Srt.load(f)
-            model = SyncModel(0, 1.0)
-            saveModel()
-            flash("Записано в ${f.name}. Оригиналът е запазен като ${f.name}.bak")
-        } catch (e: Exception) {
-            flash("Неуспешен запис: ${e.message}")
+        val scale = model.scale
+        val offset = model.offsetMs
+        flash("Записване…")
+        io.execute {
+            val res = runCatching {
+                Srt.saveShifted(s, scale, offset)
+                Srt.load(f)
+            }
+            handler.post {
+                res.onSuccess {
+                    if (sub === s) {
+                        sub = it
+                        model = SyncModel(0, 1.0)
+                        saveModel()
+                    }
+                    flash("Записано в ${f.name}. Оригиналът е запазен като ${f.name}.bak")
+                }.onFailure { flash("Неуспешен запис: ${it.message}") }
+            }
         }
     }
 
@@ -663,7 +794,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
                 }
                 p.show(
                     "Изберете .srt файл",
-                    browser.dir?.absolutePath ?: "Предложения (★) и устройства",
+                    browser.dir?.path ?: "Предложения (★), устройства и мрежови папки",
                     rows,
                     "▲▼ избор   OK отвори   ◀ или BACK нагоре   [$hot] отказ",
                     status,

@@ -13,7 +13,7 @@ data class Cue(val startMs: Long, val endMs: Long, val text: String)
 
 /** Зареден .srt файл. Пазим кодировката, за да го запишем обратно в същата. */
 class SubtitleFile(
-    val file: File?,
+    val file: VFile?,
     val charset: Charset,
     val hadBom: Boolean,
     val cues: List<Cue>,
@@ -57,10 +57,12 @@ object Srt {
     /** Резервна кодировка за файлове без BOM, които не са валиден UTF-8 (типично за български .srt). */
     val FALLBACK: Charset = Charset.forName("windows-1251")
 
-    fun load(file: File): SubtitleFile {
+    fun load(file: VFile): SubtitleFile {
         val d = decode(file.readBytes())
         return SubtitleFile(file, d.charset, d.bom, parse(d.text))
     }
+
+    fun load(file: File): SubtitleFile = load(LocalFile(file))
 
     data class Decoded(val text: String, val charset: Charset, val bom: Boolean)
 
@@ -144,8 +146,9 @@ object Srt {
      */
     fun saveShifted(sub: SubtitleFile, scale: Double, offsetMs: Long) {
         val f = sub.file ?: error("Няма файл")
-        val bak = File(f.path + ".bak")
-        if (!bak.exists()) f.copyTo(bak)
+        val dir = f.parent ?: error("Няма папка")
+        val bak = dir.child(f.name + ".bak")
+        if (!bak.exists()) bak.writeBytes(f.readBytes())
         val body = render(sub.cues, scale, offsetMs).toByteArray(sub.charset)
         val bom = when {
             !sub.hadBom -> ByteArray(0)
@@ -154,11 +157,6 @@ object Srt {
             sub.charset == Charsets.UTF_16BE -> byteArrayOf(0xFE.toByte(), 0xFF.toByte())
             else -> ByteArray(0)
         }
-        val tmp = File(f.path + ".tmp")
-        tmp.writeBytes(bom + body)
-        if (!tmp.renameTo(f)) {
-            f.writeBytes(bom + body)
-            tmp.delete()
-        }
+        f.writeBytes(bom + body)
     }
 }

@@ -32,6 +32,9 @@ class SessionClock(
     var metadata: MediaMetadata? = controller.metadata
         private set
 
+    /** Вика се (в главната нишка), когато плейърът смени филма. */
+    var onMetadata: ((MediaMetadata?) -> Unit)? = null
+
     private val callback = object : MediaController.Callback() {
         override fun onPlaybackStateChanged(s: PlaybackState?) {
             state = s
@@ -39,6 +42,7 @@ class SessionClock(
 
         override fun onMetadataChanged(m: MediaMetadata?) {
             metadata = m
+            onMetadata?.invoke(m)
         }
     }
 

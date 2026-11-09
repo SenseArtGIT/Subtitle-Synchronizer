@@ -2,6 +2,8 @@ package com.senseart.subsync
 
 import android.content.Context
 import android.content.SharedPreferences
+import org.json.JSONArray
+import org.json.JSONObject
 
 class Prefs(context: Context) {
     val sp: SharedPreferences = context.getSharedPreferences("subsync", Context.MODE_PRIVATE)
@@ -51,6 +53,49 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(K_OK_PAUSES, false)
         set(v) = sp.edit().putBoolean(K_OK_PAUSES, v).apply()
 
+    /** Мрежовите папки (паролата се пази само на това устройство). */
+    var shares: List<SmbShare>
+        get() {
+            val raw = sp.getString(K_SHARES, null) ?: return emptyList()
+            return try {
+                val a = JSONArray(raw)
+                (0 until a.length()).map {
+                    val o = a.getJSONObject(it)
+                    SmbShare(
+                        o.optString("host"), o.optString("share"), o.optString("user"),
+                        o.optString("password"), o.optString("domain"),
+                    )
+                }.filter { it.host.isNotBlank() && it.share.isNotBlank() }
+            } catch (e: Exception) {
+                emptyList()
+            }
+        }
+        set(v) {
+            val a = JSONArray()
+            v.forEach {
+                a.put(
+                    JSONObject().put("host", it.host).put("share", it.share).put("user", it.user)
+                        .put("password", it.password).put("domain", it.domain)
+                )
+            }
+            sp.edit().putString(K_SHARES, a.toString()).apply()
+        }
+
+    /** Последният филм, отворен през приложението (вж. OpenVideoActivity). */
+    fun setCurrentVideo(uri: String, name: String?, dataPath: String?) {
+        sp.edit()
+            .putString(K_VIDEO_URI, uri)
+            .putString(K_VIDEO_NAME, name)
+            .putString(K_VIDEO_DATA, dataPath)
+            .putLong(K_VIDEO_AT, System.currentTimeMillis())
+            .apply()
+    }
+
+    val currentVideoUri: String? get() = sp.getString(K_VIDEO_URI, null)
+    val currentVideoName: String? get() = sp.getString(K_VIDEO_NAME, null)
+    val currentVideoData: String? get() = sp.getString(K_VIDEO_DATA, null)
+    val currentVideoAt: Long get() = sp.getLong(K_VIDEO_AT, 0)
+
     fun loadModel(path: String): SyncModel? {
         if (!sp.contains("off:$path")) return null
         val off = sp.getLong("off:$path", 0)
@@ -75,5 +120,10 @@ class Prefs(context: Context) {
         const val K_PLAYER = "player_pkg"
         const val K_FORCE_MANUAL = "force_manual"
         const val K_OK_PAUSES = "ok_pauses"
+        const val K_SHARES = "smb_shares"
+        const val K_VIDEO_URI = "video_uri"
+        const val K_VIDEO_NAME = "video_name"
+        const val K_VIDEO_DATA = "video_data"
+        const val K_VIDEO_AT = "video_at"
     }
 }

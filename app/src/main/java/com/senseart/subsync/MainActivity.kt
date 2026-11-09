@@ -1,6 +1,7 @@
 package com.senseart.subsync
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Color
@@ -10,10 +11,12 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
+import android.text.InputType
 import android.util.TypedValue
 import android.view.KeyEvent
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -33,6 +36,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     private lateinit var calibLabel: TextView
     private lateinit var okPauseBtn: Button
     private lateinit var manualBtn: Button
+    private lateinit var sharesBox: LinearLayout
 
     private fun dp(v: Int) =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
@@ -87,13 +91,32 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
             14f, 0xFFB0B8C0.toInt(),
         )
 
-        section("3. Вид на субтитрите")
+        section("3. Мрежови папки (компютър)")
+        text(
+            "Добавете споделените папки на компютъра, в които държите филми. Така приложението " +
+                "намира и записва .srt файловете и там.",
+            14f, 0xFFB0B8C0.toInt(),
+        )
+        sharesBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(sharesBox)
+        button("+ Добави мрежова папка") { editShare(-1) }
+
+        section("4. Отваряне на филми")
+        text(
+            "За да намира субтитрите сам, където и да е филмът (флашка, USB диск, вътрешна памет " +
+                "или компютъра в мрежата): във файловия мениджър отворете видео файл, изберете " +
+                "„Отвори с“ → „Subtitle Synchronizer“ → „Винаги“. Приложението запомня кой е файлът " +
+                "и веднага го предава на ViMu – няма да го виждате на екрана.",
+            15f, 0xFFD0D6DC.toInt(),
+        )
+
+        section("5. Вид на субтитрите")
         sizeLabel = text("", 16f, Color.WHITE)
         row(button("Размер −") { prefs.textSizeSp -= 2 }, button("Размер +") { prefs.textSizeSp += 2 })
         marginLabel = text("", 16f, Color.WHITE)
         row(button("По-ниско") { prefs.bottomMarginDp -= 8 }, button("По-високо") { prefs.bottomMarginDp += 8 })
 
-        section("4. Допълнителни")
+        section("6. Допълнителни")
         defOffsetLabel = text("", 16f, Color.WHITE)
         row(
             button("−0.5 с") { prefs.defaultOffsetMs -= 500 },
@@ -140,7 +163,95 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         return super.onKeyDown(keyCode, event)
     }
 
+    private fun refreshShares() {
+        sharesBox.removeAllViews()
+        val list = prefs.shares
+        if (list.isEmpty()) {
+            sharesBox.addView(TextView(this).apply {
+                text = "(няма добавени)"
+                setTextColor(0xFF707880.toInt())
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            })
+        }
+        list.forEachIndexed { i, sh ->
+            sharesBox.addView(Button(this).apply {
+                text = "🖧  " + sh.label
+                isAllCaps = false
+                setOnClickListener { editShare(i) }
+            })
+        }
+    }
+
+    /** Добавяне (index = -1) или промяна на мрежова папка. */
+    private fun editShare(index: Int) {
+        val list = prefs.shares.toMutableList()
+        val old = list.getOrNull(index)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(8), dp(24), dp(8))
+        }
+        fun field(label: String, value: String, password: Boolean = false) = EditText(this).apply {
+            hint = label
+            setText(value)
+            isSingleLine = true
+            inputType = if (password) InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            else InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            box.addView(TextView(this@MainActivity).apply { text = label; setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f) })
+            box.addView(this)
+        }
+        val host = field("Компютър – IP адрес или име (напр. 192.168.1.10)", old?.host ?: "")
+        val share = field("Споделена папка (напр. Movies)", old?.share ?: "")
+        val user = field("Потребител на компютъра (празно = гост)", old?.user ?: "")
+        val pass = field("Парола", old?.password ?: "", password = true)
+        val domain = field("Домейн (обикновено празно)", old?.domain ?: "")
+        val result = TextView(this).apply { setPadding(0, dp(8), 0, 0) }
+
+        fun read(): SmbShare? {
+            var h = host.text.toString().trim()
+            var sh = share.text.toString().trim().trim('/', '\\')
+            // Позволяваме и пълен път: \\PC\Movies или smb://PC/Movies
+            SmbShare.splitUnc(h)?.let { (a, b) -> h = a; if (sh.isEmpty()) sh = b }
+            if (h.isEmpty() || sh.isEmpty()) return null
+            return SmbShare(h, sh, user.text.toString().trim(), pass.text.toString(), domain.text.toString().trim())
+        }
+
+        box.addView(Button(this).apply {
+            text = "Провери връзката"
+            isAllCaps = false
+            setOnClickListener {
+                val sh = read()
+                if (sh == null) {
+                    result.text = "Попълнете компютър и споделена папка."; return@setOnClickListener
+                }
+                result.text = "Свързване…"
+                Thread {
+                    val msg = Smb.test(sh)
+                    runOnUiThread { result.text = msg }
+                }.start()
+            }
+        })
+        box.addView(result)
+
+        val b = AlertDialog.Builder(this)
+            .setTitle(if (old == null) "Нова мрежова папка" else "Мрежова папка")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Запази") { _, _ ->
+                val sh = read() ?: return@setPositiveButton
+                if (old == null) list.add(sh) else list[index] = sh
+                prefs.shares = list
+                refreshShares()
+            }
+            .setNegativeButton("Отказ", null)
+        if (old != null) b.setNeutralButton("Изтрий") { _, _ ->
+            list.removeAt(index)
+            prefs.shares = list
+            refreshShares()
+        }
+        b.show()
+    }
+
     private fun updateLabels() {
+        refreshShares()
         val a11y = isAccessibilityOn()
         a11yStatus.text = mark(a11y) + "Достъпност (показване над плейъра и бутоните)" +
             if (a11y && !SubSyncService.running) " – включена, стартира се…" else ""
@@ -226,8 +337,8 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         """
 
         const val HELP = """
-            • Пуснете филма във ViMu (с изключени субтитри) и натиснете бутона за панела.
-            • Първия път изберете .srt файла. Приложението предлага файлове със същото име като филма (★).
+            • Отворете филма от файловия мениджър (с „Отвори с → Subtitle Synchronizer“). Филмът тръгва във ViMu, а приложението само намира .srt до него (или в подпапка Subs) и показва субтитрите.
+            • Ако не намери файла, натиснете бутона за панела и го изберете – от устройствата или от мрежовите папки. Предложенията със същото име като филма са отбелязани с ★.
             • ◀ ▶ – субтитрите по-рано / по-късно с 0.1 с. Задръжте за 1 с, после 10 с на стъпка.
             • Синхрон по реплика: щом чуете реплика, натиснете OK (моментът се запомня), изберете с ▲▼ тази реплика в списъка и натиснете OK. Отместването се изчислява само.
             • Ако разликата расте с времето, повторете синхрона по реплика по-късно във филма – тогава се изчислява и скоростта. Или в менюто изберете 25 ↔ 23.976 fps.

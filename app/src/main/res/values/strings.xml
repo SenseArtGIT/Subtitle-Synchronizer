@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Subtitle Synchronizer</string>
+    <string name="open_label">Subtitle Synchronizer (→ ViMu + субтитри)</string>
     <string name="a11y_label">Subtitle Synchronizer – субтитри над плейъра</string>
     <string name="a11y_description">Показва субтитри от .srt файл над картината на видео плейъра (напр. ViMu) и позволява синхронизирането им с дистанционното по време на филма. Получава бутоните на дистанционното само за да отвори панела и да управлява синхрона.</string>
 </resources>

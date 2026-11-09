@@ -11,8 +11,8 @@ android {
         applicationId = "com.senseart.subsync"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
 
     signingConfigs {
@@ -43,8 +43,26 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    packaging {
+        resources {
+            excludes += setOf(
+                "META-INF/versions/**",
+                "META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA",
+                "META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*",
+                "META-INF/INDEX.LIST", "META-INF/*.kotlin_module",
+            )
+        }
+    }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
+    // SMB2/3 клиент за споделени папки на компютъра (Windows, Samba, NAS).
+    implementation("com.hierynomus:smbj:0.14.0")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.slf4j:slf4j-nop:2.0.16")
 }

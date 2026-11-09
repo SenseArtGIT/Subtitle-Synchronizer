@@ -3,74 +3,43 @@ package com.senseart.subsync
 import java.io.File
 import java.util.Locale
 
-/** Прост файлов браузър, управляван от стрелките на дистанционното. */
+/**
+ * Файлов браузър за панела: вътрешна памет, USB/карти и мрежови папки.
+ * Съдържанието се подготвя с [build] (може да ходи по мрежата – извън главната нишка),
+ * а се показва с [show] (в главната нишка).
+ */
 class FileBrowser {
 
     enum class Kind { UP, DIR, FILE, SUGGESTION, INFO }
 
-    data class Entry(val file: File?, val label: String, val kind: Kind)
+    data class Entry(val file: VFile?, val label: String, val kind: Kind)
 
-    /** null = началният екран (предложения + устройства за съхранение). */
-    var dir: File? = null
+    /** null = началният екран (предложения + устройства + мрежови папки). */
+    var dir: VFile? = null
         private set
-    var entries: List<Entry> = emptyList()
+    var entries: List<Entry> = listOf(Entry(null, "Зареждане…", Kind.INFO))
         private set
     var sel = 0
 
-    /** Последно ползваната папка – показва се на началния екран. */
-    var recentDir: File? = null
-
-    var suggestions: List<File> = emptyList()
-        set(v) {
-            field = v
-            if (dir == null) {
-                val keep = sel
-                open(null)
-                sel = keep.coerceIn(0, (entries.size - 1).coerceAtLeast(0))
-            }
-        }
-
-    fun open(d: File?) {
+    fun show(d: VFile?, list: List<Entry>, selectPath: String? = null) {
         dir = d
-        val list = ArrayList<Entry>()
-        if (d == null) {
-            for (f in suggestions) list.add(Entry(f, "★ " + f.name, Kind.SUGGESTION))
-            recentDir?.takeIf { it.isDirectory }?.let { list.add(Entry(it, "◷ Последна папка: " + it.name, Kind.DIR)) }
-            for (r in roots()) list.add(Entry(r, "▸ " + rootLabel(r), Kind.DIR))
-        } else {
-            list.add(Entry(d.parentFile, "⬑ ..", Kind.UP))
-            val children = d.listFiles()
-            if (children == null) {
-                list.add(Entry(null, "(няма достъп – дайте „Достъп до всички файлове“)", Kind.INFO))
-            } else {
-                children.filter { it.isDirectory && !it.name.startsWith(".") }
-                    .sortedBy { it.name.lowercase(Locale.ROOT) }
-                    .forEach { list.add(Entry(it, "▸ " + it.name, Kind.DIR)) }
-                children.filter { it.isFile && isSubtitle(it) }
-                    .sortedBy { it.name.lowercase(Locale.ROOT) }
-                    .forEach { list.add(Entry(it, it.name, Kind.FILE)) }
-                if (list.size == 1) list.add(Entry(null, "(няма папки и .srt файлове)", Kind.INFO))
-            }
-        }
         entries = list
-        sel = if (list.size > 1 && list[0].kind == Kind.UP) 1 else 0
+        val i = if (selectPath != null) list.indexOfFirst { it.file?.path == selectPath } else -1
+        sel = when {
+            i >= 0 -> i
+            list.size > 1 && list[0].kind == Kind.UP -> 1
+            else -> 0
+        }
     }
 
-    /** Нагоре с една папка. false, ако вече сме на началния екран. */
-    fun up(): Boolean {
-        val d = dir ?: return false
-        val isRoot = roots().any { it.absolutePath == d.absolutePath }
-        val prev = d
-        open(if (isRoot) null else d.parentFile)
-        val i = entries.indexOfFirst { it.file?.absolutePath == prev.absolutePath }
-        if (i >= 0) sel = i
-        return true
+    fun showLoading(d: VFile?) {
+        dir = d
+        entries = listOf(Entry(null, "Зареждане…", Kind.INFO))
+        sel = 0
     }
 
     companion object {
-        fun isSubtitle(f: File) = f.name.lowercase(Locale.ROOT).endsWith(".srt")
-
-        fun roots(): List<File> {
+        fun localRoots(): List<VFile> {
             val res = ArrayList<File>()
             val internal = File("/storage/emulated/0")
             if (internal.exists()) res.add(internal)
@@ -78,56 +47,60 @@ class FileBrowser {
                 if (it.isDirectory && it.name != "emulated" && it.name != "self" && it.canRead()) res.add(it)
             }
             File("/mnt/media_rw").listFiles()?.forEach { if (it.isDirectory && it.canRead()) res.add(it) }
-            return res.distinctBy { it.absolutePath }
+            return res.distinctBy { it.absolutePath }.map { LocalFile(it) }
         }
 
-        private fun rootLabel(f: File) =
-            if (f.absolutePath == "/storage/emulated/0") "Вътрешна памет" else "USB / карта (${f.name})"
+        /** Всички места, в които може да има филми: локални устройства + мрежови папки. */
+        fun allRoots(shares: List<SmbShare>): List<VFile> = localRoots() + shares.map { it.root }
 
-        /** Опростява име за сравнение: малки букви, без разширение, само букви и цифри. */
-        fun normalize(name: String): String {
-            val base = name.substringAfterLast('/').let {
-                val dot = it.lastIndexOf('.')
-                if (dot > 0 && it.length - dot <= 5) it.substring(0, dot) else it
-            }
-            return base.lowercase(Locale.ROOT).filter { it.isLetterOrDigit() }
+        fun isRoot(d: VFile): Boolean = when (d) {
+            is SmbFile -> d.rel.isEmpty()
+            else -> localRoots().any { it.path == d.path }
         }
 
-        fun matches(srt: File, title: String): Boolean {
-            val a = normalize(srt.name).removeSuffix("bg").removeSuffix("bul")
-            val b = normalize(title)
-            if (a.length < 4 || b.length < 4) return false
-            return a == b || a.startsWith(b) || b.startsWith(a)
+        private fun rootLabel(f: VFile) = when {
+            f is SmbFile -> "🖧 Компютър: " + f.share.label
+            f.path == "/storage/emulated/0" -> "▸ Вътрешна памет"
+            else -> "▸ USB / карта (${f.name})"
         }
 
-        /**
-         * Търси .srt файлове, които съвпадат с името на филма.
-         * Ако плейърът е дал пълния път до видеото, гледа първо в неговата папка.
-         */
-        fun findSuggestions(title: String?, videoPath: String?, extraDirs: List<File>): List<File> {
-            val found = LinkedHashSet<File>()
-            if (videoPath != null) {
-                val v = File(videoPath)
-                v.parentFile?.listFiles()?.filter { it.isFile && isSubtitle(it) && matches(it, v.name) }
-                    ?.sortedBy { it.name.length }?.forEach { found.add(it) }
-            }
-            if (title.isNullOrBlank()) return found.toList()
-            for (d in extraDirs) {
-                d.listFiles()?.filter { it.isFile && isSubtitle(it) && matches(it, title) }?.forEach { found.add(it) }
-            }
-            var budget = 4000
-            fun walk(d: File, depth: Int) {
-                if (budget-- <= 0 || depth > 5 || found.size >= 10) return
-                val ch = d.listFiles() ?: return
-                for (f in ch) {
-                    if (f.isFile && isSubtitle(f) && matches(f, title)) found.add(f)
+        fun build(
+            d: VFile?,
+            suggestions: List<VFile>,
+            recent: VFile?,
+            shares: List<SmbShare>,
+        ): List<Entry> {
+            val list = ArrayList<Entry>()
+            if (d == null) {
+                for (f in suggestions) list.add(Entry(f, "★ " + f.name + "   (" + shortParent(f) + ")", Kind.SUGGESTION))
+                if (recent != null) list.add(Entry(recent, "◷ Последна папка: " + recent.name, Kind.DIR))
+                for (r in allRoots(shares)) list.add(Entry(r, rootLabel(r), Kind.DIR))
+                if (shares.isEmpty()) {
+                    list.add(Entry(null, "(мрежови папки се добавят от приложението → „Мрежови папки“)", Kind.INFO))
                 }
-                for (f in ch) {
-                    if (f.isDirectory && !f.name.startsWith(".") && f.name != "Android") walk(f, depth + 1)
-                }
+                return list
             }
-            for (r in roots()) walk(r, 0)
-            return found.toList()
+            list.add(Entry(d.parent, "⬑ ..", Kind.UP))
+            val children = d.list()
+            if (children == null) {
+                val why = if (d is SmbFile) "(няма връзка с компютъра или няма достъп)"
+                else "(няма достъп – дайте „Достъп до всички файлове“)"
+                list.add(Entry(null, why, Kind.INFO))
+                return list
+            }
+            children.filter { it.isDirectory && !it.name.startsWith(".") && !it.name.startsWith("$") }
+                .sortedBy { it.name.lowercase(Locale.ROOT) }
+                .forEach { list.add(Entry(it, "▸ " + it.name, Kind.DIR)) }
+            children.filter { !it.isDirectory && SubtitleLocator.isSubtitle(it.name) }
+                .sortedBy { it.name.lowercase(Locale.ROOT) }
+                .forEach { list.add(Entry(it, it.name, Kind.FILE)) }
+            if (list.size == 1) list.add(Entry(null, "(няма папки и .srt файлове)", Kind.INFO))
+            return list
+        }
+
+        private fun shortParent(f: VFile): String {
+            val p = f.parent ?: return ""
+            return if (f is SmbFile) f.share.share + "/" + p.name else p.name
         }
     }
 }

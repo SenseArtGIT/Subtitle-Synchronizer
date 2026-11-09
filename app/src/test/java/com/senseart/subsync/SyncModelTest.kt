@@ -2,7 +2,6 @@ package com.senseart.subsync
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
-import java.io.File
 
 class SyncModelTest {
     @Test
@@ -68,8 +67,8 @@ class SyncModelTest {
 
     @Test
     fun filenameMatching() {
-        assertEquals(true, FileBrowser.matches(File("The.Movie.2020.1080p.srt"), "The.Movie.2020.1080p.mkv"))
-        assertEquals(true, FileBrowser.matches(File("The.Movie.2020.1080p.bg.srt"), "The.Movie.2020.1080p.mkv"))
-        assertEquals(false, FileBrowser.matches(File("Other.Film.srt"), "The.Movie.2020.1080p.mkv"))
+        assertEquals(true, SubtitleLocator.matches("The.Movie.2020.1080p.srt", "The.Movie.2020.1080p.mkv"))
+        assertEquals(true, SubtitleLocator.matches("The.Movie.2020.1080p.bg.srt", "The.Movie.2020.1080p.mkv"))
+        assertEquals(false, SubtitleLocator.matches("Other.Film.srt", "The.Movie.2020.1080p.mkv"))
     }
 }
