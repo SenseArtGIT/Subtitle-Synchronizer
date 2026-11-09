@@ -15,11 +15,13 @@ import android.text.InputType
 import android.util.TypedValue
 import android.view.KeyEvent
 import android.view.View
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 
 /** Екран с настройки: разрешения, бутон за панела, вид на субтитрите. */
 class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListener {
@@ -65,6 +67,15 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         section("1. Разрешения (еднократно)")
         a11yStatus = text("", 16f, Color.WHITE)
         button("Отвори „Достъпност“") { open(Settings.ACTION_ACCESSIBILITY_SETTINGS) }
+        text(
+            "Ако пише, че е забранено от съображения за сигурност: отворете информацията за " +
+                "приложението, изберете „Разреши ограничени настройки“ (в менюто ⋮ или най-долу) " +
+                "и опитайте отново. Ако такава опция няма – ползвайте adb командите по-долу.",
+            14f, 0xFFB0B8C0.toInt(),
+        )
+        button("Отвори информация за приложението") {
+            open(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+        }
         notifStatus = text("", 16f, Color.WHITE)
         button("Отвори „Достъп до известия“") { open(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS) }
         filesStatus = text("", 16f, Color.WHITE)
@@ -93,13 +104,15 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
 
         section("3. Мрежови папки (компютър)")
         text(
-            "Добавете споделените папки на компютъра, в които държите филми. Така приложението " +
-                "намира и записва .srt файловете и там.",
+            "Натиснете „Търси в мрежата“, изберете компютъра и папките с филми – както във " +
+                "файловия мениджър. Мрежова папка, от която пуснете филм през ES File Explorer, " +
+                "се добавя и сама, ако адресът съдържа потребител и парола.",
             14f, 0xFFB0B8C0.toInt(),
         )
         sharesBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(sharesBox)
-        button("+ Добави мрежова папка") { editShare(-1) }
+        button("🔍 Търси в мрежата") { searchNetwork() }
+        button("+ Добави ръчно (IP и име на папка)") { editShare(-1) }
 
         section("4. Отваряне на филми")
         text(
@@ -182,6 +195,128 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         }
     }
 
+    // ---------------------------------------------------------------- търсене в мрежата
+
+    /** Стъпка 1: намира компютрите в мрежата и ги показва, докато се намират. */
+    private fun searchNetwork() {
+        val hosts = ArrayList<NetworkScan.Host>()
+        val adapter = ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, ArrayList())
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("Търсене на компютри в мрежата…")
+            .setAdapter(adapter) { _, which -> hosts.getOrNull(which)?.let { pickHost(it) } }
+            .setNegativeButton("Отказ", null)
+            .setNeutralButton("Въведи ръчно") { _, _ -> editShare(-1) }
+            .show()
+        val prefixes = NetworkScan.localPrefixes()
+        if (prefixes.isEmpty()) {
+            dlg.setTitle("Няма връзка с мрежата")
+            return
+        }
+        Thread {
+            NetworkScan.scan(prefixes) { h ->
+                runOnUiThread {
+                    hosts.add(h)
+                    adapter.add("🖥   " + h.title)
+                }
+            }
+            runOnUiThread {
+                if (dlg.isShowing) dlg.setTitle(
+                    if (hosts.isEmpty()) "Не намерих компютри със споделени папки"
+                    else "Изберете компютър (${hosts.size})"
+                )
+            }
+        }.start()
+    }
+
+    /** Стъпка 2: първо пробва без парола (гост); ако компютърът иска, пита за потребител и парола. */
+    private fun pickHost(h: NetworkScan.Host) {
+        val wait = Toast.makeText(this, "Свързване с ${h.name ?: h.ip}…", Toast.LENGTH_SHORT)
+        wait.show()
+        Thread {
+            val shares = try {
+                Smb.listShares(h.ip, "", "")
+            } catch (e: Exception) {
+                null
+            }
+            runOnUiThread {
+                if (!shares.isNullOrEmpty()) chooseShares(h, "", "", shares)
+                else askCredentials(h, null)
+            }
+        }.start()
+    }
+
+    private fun askCredentials(h: NetworkScan.Host, error: String?) {
+        val known = prefs.shares.firstOrNull { it.host == h.ip && it.user.isNotBlank() }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(8), dp(24), dp(8))
+        }
+        box.addView(TextView(this).apply {
+            text = (if (error != null) "⚠ $error\n\n" else "") +
+                "Въведете потребителя и паролата, с които влизате в Windows на този компютър " +
+                "(при акаунт на Microsoft – имейлът и паролата му)."
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+        })
+        val user = EditText(this).apply {
+            hint = "Потребител"; isSingleLine = true; setText(known?.user ?: "")
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+        }
+        val pass = EditText(this).apply {
+            hint = "Парола"; isSingleLine = true; setText(known?.password ?: "")
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        box.addView(user)
+        box.addView(pass)
+        AlertDialog.Builder(this)
+            .setTitle(h.name ?: h.ip)
+            .setView(box)
+            .setPositiveButton("Влез") { _, _ ->
+                val u = user.text.toString().trim()
+                val p = pass.text.toString()
+                Toast.makeText(this, "Свързване…", Toast.LENGTH_SHORT).show()
+                Thread {
+                    val res = runCatching { Smb.listShares(h.ip, u, p) }
+                    runOnUiThread {
+                        res.onSuccess {
+                            if (it.isEmpty()) askCredentials(h, "Компютърът няма споделени папки.")
+                            else chooseShares(h, u, p, it)
+                        }.onFailure {
+                            askCredentials(h, "Неуспешно влизане: ${it.message ?: it.javaClass.simpleName}")
+                        }
+                    }
+                }.start()
+            }
+            .setNegativeButton("Отказ", null)
+            .show()
+    }
+
+    /** Стъпка 3: избор на споделените папки (може няколко). */
+    private fun chooseShares(h: NetworkScan.Host, user: String, pass: String, names: List<String>) {
+        val existing = prefs.shares
+        val checked = BooleanArray(names.size) { i ->
+            names.size == 1 || existing.any { it.host == h.ip && it.share.equals(names[i], true) }
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Споделени папки на ${h.name ?: h.ip}")
+            .setMultiChoiceItems(names.toTypedArray(), checked) { _, i, on -> checked[i] = on }
+            .setPositiveButton("Добави") { _, _ ->
+                val list = prefs.shares.toMutableList()
+                var added = 0
+                names.forEachIndexed { i, n ->
+                    if (!checked[i]) return@forEachIndexed
+                    val sh = SmbShare(h.ip, n, user, pass, "", h.name ?: "")
+                    val at = list.indexOfFirst { it.id == sh.id }
+                    if (at >= 0) list[at] = sh else list.add(sh)
+                    added++
+                }
+                prefs.shares = list
+                refreshShares()
+                Toast.makeText(this, "Добавени папки: $added", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Отказ", null)
+            .show()
+    }
+
     /** Добавяне (index = -1) или промяна на мрежова папка. */
     private fun editShare(index: Int) {
         val list = prefs.shares.toMutableList()
@@ -204,6 +339,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         val user = field("Потребител на компютъра (празно = гост)", old?.user ?: "")
         val pass = field("Парола", old?.password ?: "", password = true)
         val domain = field("Домейн (обикновено празно)", old?.domain ?: "")
+        val compName = old?.name ?: ""
         val result = TextView(this).apply { setPadding(0, dp(8), 0, 0) }
 
         fun read(): SmbShare? {
@@ -212,7 +348,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
             // Позволяваме и пълен път: \\PC\Movies или smb://PC/Movies
             SmbShare.splitUnc(h)?.let { (a, b) -> h = a; if (sh.isEmpty()) sh = b }
             if (h.isEmpty() || sh.isEmpty()) return null
-            return SmbShare(h, sh, user.text.toString().trim(), pass.text.toString(), domain.text.toString().trim())
+            return SmbShare(h, sh, user.text.toString().trim(), pass.text.toString(), domain.text.toString().trim(), compName)
         }
 
         box.addView(Button(this).apply {

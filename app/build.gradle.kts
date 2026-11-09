@@ -11,8 +11,8 @@ android {
         applicationId = "com.senseart.subsync"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
     }
 
     signingConfigs {
@@ -63,6 +63,8 @@ android {
 dependencies {
     // SMB2/3 клиент за споделени папки на компютъра (Windows, Samba, NAS).
     implementation("com.hierynomus:smbj:0.14.0")
+    // Списък на споделените папки на компютъра (SRVSVC през SMB) – за бутона „Търси в мрежата“.
+    implementation("com.rapid7.client:dcerpc:0.12.13")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.slf4j:slf4j-nop:2.0.16")
 }

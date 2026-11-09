@@ -643,6 +643,15 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     ): List<VFile> = try {
         val video = SubtitleLocator.resolveVideo(uri, dataPath, shares)
         var found = if (video != null) SubtitleLocator.siblings(video) else emptyList()
+        // Мрежова папка, разпозната от адреса (напр. от ES File Explorer), която още не е добавена:
+        // ако връзката работи, я запомняме, за да се вижда и в панела.
+        if (video is SmbFile && shares.none { it.id == video.share.id && it.user == video.share.user }) {
+            val works = found.isNotEmpty() || video.parent?.list() != null
+            if (works) handler.post {
+                val now = prefs.shares
+                if (now.none { it.id == video.share.id }) prefs.shares = now + video.share
+            }
+        }
         if (found.isEmpty()) {
             found = SubtitleLocator.searchByName(videoName, listOfNotNull(recent?.parent, recent))
         }

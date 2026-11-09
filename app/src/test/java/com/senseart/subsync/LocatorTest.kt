@@ -1,7 +1,6 @@
 package com.senseart.subsync
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -35,8 +34,20 @@ class LocatorTest {
             "content://fm.provider/smb%3A%2F%2Fivan%40192.168.1.10%2FMovies%2FA%2Fb.mkv", null, listOf(pc)
         ) as SmbFile
         assertEquals("A/b.mkv", w.rel)
-        // непознат компютър, без настроена папка
-        assertNull(SubtitleLocator.resolveVideo("smb://10.0.0.5/Other/x.mkv", null, listOf(pc)))
+        // непознат компютър: папката се сглобява от адреса (като гост)
+        val g = SubtitleLocator.resolveVideo("smb://10.0.0.5/Other/x.mkv", null, listOf(pc)) as SmbFile
+        assertEquals("10.0.0.5", g.share.host)
+        assertEquals("", g.share.user)
+        // адрес с потребител и парола (ES File Explorer): ползват се директно
+        val es = SubtitleLocator.resolveVideo(
+            "http://127.0.0.1:59777/smb%3A%2F%2FWORK%3Bpesho%3Ap%40ss%40192.168.1.20%2FFilmi%2FX%2Fy.mkv", null, listOf(pc)
+        ) as SmbFile
+        assertEquals(SmbShare("192.168.1.20", "Filmi", "pesho", "p@ss", "WORK"), es.share)
+        assertEquals("X/y.mkv", es.rel)
+        // разпознаване по име на компютъра
+        val named = pc.copy(name = "DESKTOP-KINO")
+        val n = SubtitleLocator.resolveVideo("smb://desktop-kino/Movies/a.mkv", null, listOf(named)) as SmbFile
+        assertEquals(named, n.share)
     }
 
     @Test

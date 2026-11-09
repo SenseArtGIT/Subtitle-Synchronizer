@@ -63,7 +63,7 @@ class Prefs(context: Context) {
                     val o = a.getJSONObject(it)
                     SmbShare(
                         o.optString("host"), o.optString("share"), o.optString("user"),
-                        o.optString("password"), o.optString("domain"),
+                        o.optString("password"), o.optString("domain"), o.optString("name"),
                     )
                 }.filter { it.host.isNotBlank() && it.share.isNotBlank() }
             } catch (e: Exception) {
@@ -75,7 +75,7 @@ class Prefs(context: Context) {
             v.forEach {
                 a.put(
                     JSONObject().put("host", it.host).put("share", it.share).put("user", it.user)
-                        .put("password", it.password).put("domain", it.domain)
+                        .put("password", it.password).put("domain", it.domain).put("name", it.name)
                 )
             }
             sp.edit().putString(K_SHARES, a.toString()).apply()

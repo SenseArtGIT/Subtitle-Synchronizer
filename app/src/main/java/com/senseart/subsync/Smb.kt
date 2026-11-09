@@ -8,7 +8,10 @@ import com.hierynomus.smbj.SMBClient
 import com.hierynomus.smbj.SmbConfig
 import com.hierynomus.smbj.auth.AuthenticationContext
 import com.hierynomus.security.bc.BCSecurityProvider
+import com.hierynomus.smbj.session.Session
 import com.hierynomus.smbj.share.DiskShare
+import com.rapid7.client.dcerpc.mssrvs.ServerService
+import com.rapid7.client.dcerpc.transport.SMBTransportFactories
 import java.util.EnumSet
 import java.util.Locale
 import java.util.concurrent.TimeUnit
@@ -20,10 +23,17 @@ data class SmbShare(
     val user: String = "",
     val password: String = "",
     val domain: String = "",
+    /** Името на компютъра (от търсенето в мрежата), само за показване и за разпознаване в адреси. */
+    val name: String = "",
 ) {
     /** Стабилен ключ: "smb://хост/папка" с малки букви. */
     val id: String get() = "smb://${host.lowercase(Locale.ROOT)}/${share.lowercase(Locale.ROOT)}"
-    val label: String get() = "$host / $share" + if (user.isNotBlank()) "  ($user)" else "  (гост)"
+    val label: String
+        get() = (if (name.isNotBlank()) "$name ($host)" else host) + " / $share" +
+            if (user.isNotBlank()) "  – $user" else "  – гост"
+
+    /** Дали [h] (IP или име) е този компютър. */
+    fun isHost(h: String) = host.equals(h, true) || (name.isNotBlank() && name.equals(h, true))
     val root: SmbFile get() = SmbFile(this, "", true)
 
     companion object {
@@ -56,30 +66,57 @@ object Smb {
 
     private fun key(s: SmbShare) = s.id + "|" + s.user + "|" + s.domain
 
-    @Synchronized
-    private fun disk(s: SmbShare): DiskShare {
-        disks[key(s)]?.let { if (it.isConnected) return it }
-        disks.remove(key(s))
-        val conn = client.connect(s.host)
-        val auths = if (s.user.isBlank()) {
+    /** Потребител като „DOMAIN\\user“ се разделя на домейн и потребител. */
+    private fun splitUser(user: String, domain: String): Pair<String, String?> {
+        val i = user.indexOf('\\')
+        return if (i > 0) user.substring(i + 1) to user.substring(0, i)
+        else user to domain.ifBlank { null }
+    }
+
+    /** Влиза в компютъра; без потребител пробва като гост и анонимно. */
+    private fun <T> withSession(host: String, user: String, password: String, domain: String, use: (Session) -> T): T {
+        val conn = client.connect(host)
+        val auths = if (user.isBlank()) {
             listOf(AuthenticationContext.guest(), AuthenticationContext.anonymous())
         } else {
-            listOf(AuthenticationContext(s.user, s.password.toCharArray(), s.domain.ifBlank { null }))
+            val (u, d) = splitUser(user, domain)
+            listOf(AuthenticationContext(u, password.toCharArray(), d))
         }
         var last: Exception? = null
         for (a in auths) {
             try {
-                val session = conn.authenticate(a)
-                val d = session.connectShare(s.share) as? DiskShare
-                    ?: throw IllegalStateException("„${s.share}“ не е споделена папка с файлове")
-                disks[key(s)] = d
-                return d
+                return use(conn.authenticate(a))
             } catch (e: Exception) {
                 last = e
             }
         }
         throw last ?: IllegalStateException("Неуспешно влизане")
     }
+
+    @Synchronized
+    private fun disk(s: SmbShare): DiskShare {
+        disks[key(s)]?.let { if (it.isConnected) return it }
+        disks.remove(key(s))
+        val d = withSession(s.host, s.user, s.password, s.domain) { session ->
+            session.connectShare(s.share) as? DiskShare
+                ?: throw IllegalStateException("„${s.share}“ не е споделена папка с файлове")
+        }
+        disks[key(s)] = d
+        return d
+    }
+
+    /**
+     * Споделените папки на компютъра (без скритите като C$ и без принтери).
+     * Хвърля изключение при грешна парола или липса на връзка.
+     */
+    fun listShares(host: String, user: String, password: String, domain: String = ""): List<String> =
+        withSession(host, user, password, domain) { session ->
+            val srv = ServerService(SMBTransportFactories.SRVSVC.getTransport(session))
+            srv.shares1
+                .filter { (it.type and 0x0FFFFFFF) == 0 && !it.netName.endsWith("$") }
+                .map { it.netName }
+                .sortedBy { it.lowercase(Locale.ROOT) }
+        }
 
     @Synchronized
     fun invalidate(s: SmbShare) {

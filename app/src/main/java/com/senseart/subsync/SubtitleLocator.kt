@@ -89,11 +89,12 @@ object SubtitleLocator {
             val rest = raw.substring(smbAt + 6).substringBefore('?')
             val parts = rest.split('/').filter { it.isNotEmpty() }
             if (parts.size >= 3) {
-                val host = parts[0].substringAfter('@') // smb://user@host/...
-                val cfg = shares.firstOrNull {
-                    it.host.equals(host, true) && it.share.equals(parts[1], true)
-                } ?: shares.firstOrNull { it.share.equals(parts[1], true) }
-                if (cfg != null) return SmbFile(cfg, parts.drop(2).joinToString("/"))
+                // smb://[домейн;]потребител:парола@хост/папка/... – ES File Explorer понякога ги вгражда.
+                val auth = if (parts[0].contains('@')) parts[0].substringBeforeLast('@') else ""
+                val host = parts[0].substringAfterLast('@')
+                val cfg = shares.firstOrNull { it.isHost(host) && it.share.equals(parts[1], true) }
+                    ?: fromUrlAuth(host, parts[1], auth)
+                return SmbFile(cfg, parts.drop(2).joinToString("/"))
             }
         }
 
@@ -112,7 +113,7 @@ object SubtitleLocator {
         for (cfg in shares) {
             for (i in segs.indices) {
                 if (!segs[i].equals(cfg.share, true) || i == segs.lastIndex) continue
-                val hostBefore = segs.take(i).any { it.equals(cfg.host, true) }
+                val hostBefore = segs.take(i).any { cfg.isHost(it) }
                 val score = (if (hostBefore) 10 else 0) + i
                 if (score > bestScore) {
                     bestScore = score
@@ -121,6 +122,17 @@ object SubtitleLocator {
             }
         }
         return best
+    }
+
+    /** Мрежова папка, сглобена от адреса (ако в него има потребител/парола – с тях, иначе като гост). */
+    private fun fromUrlAuth(host: String, share: String, auth: String): SmbShare {
+        var userPart = auth.substringBefore(':')
+        val pass = if (auth.contains(':')) auth.substringAfter(':') else ""
+        var domain = ""
+        if (userPart.contains(';')) {
+            domain = userPart.substringBefore(';'); userPart = userPart.substringAfter(';')
+        }
+        return SmbShare(host, share, userPart, pass, domain)
     }
 
     /** Обратното на [VFile.path]: прави файл от запазен път (локален или smb://). */

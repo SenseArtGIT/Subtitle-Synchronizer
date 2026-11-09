@@ -23,9 +23,16 @@ class SmbIntegrationTest {
         val sh = share()
         assertTrue(Smb.test(sh), Smb.test(sh).startsWith("Връзката е успешна"))
 
+        // Списък на споделените папки (за „Търси в мрежата“)
+        val names = Smb.listShares(sh.host, sh.user, sh.password)
+        assertTrue(names.toString(), names.any { it.equals(sh.share, true) })
+        assertTrue(names.none { it.endsWith("$") })
+        assertTrue(NetworkScan.isOpen(sh.host, 445, 1000))
+        System.getenv("SMB_TEST_NETBIOS")?.let { assertEquals(it, NetworkScan.netbiosName(sh.host)) }
+
         val dir = sh.root.child("Test Film (2021)")
-        val names = dir.list()!!.map { it.name }.toSet()
-        assertTrue(names.toString(), "Test.Film.2021.mkv" in names)
+        val files = dir.list()!!.map { it.name }.toSet()
+        assertTrue(files.toString(), "Test.Film.2021.mkv" in files)
 
         // Намиране до видеото по smb:// адрес
         val video = SubtitleLocator.resolveVideo("smb://$host/${sh.share}/Test%20Film%20(2021)/Test.Film.2021.mkv", null, listOf(sh))!!
