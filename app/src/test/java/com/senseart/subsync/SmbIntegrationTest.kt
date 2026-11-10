@@ -55,3 +55,19 @@ class SmbIntegrationTest {
         assertEquals("windows-1251", again.charset.name())
     }
 }
+
+class SmbReadOnlyTest {
+    @Test
+    fun saveToReadOnlyShareExplainsWhy() {
+        val host = System.getenv("SMB_TEST_HOST")
+        val ro = System.getenv("SMB_TEST_RO_SHARE")
+        org.junit.Assume.assumeTrue(host != null && ro != null)
+        val sh = SmbShare(host!!, ro!!, System.getenv("SMB_TEST_USER") ?: "", System.getenv("SMB_TEST_PASS") ?: "")
+        val f = sh.root.child("Film RO").child("film.srt")
+        val sub = Srt.load(f) // четенето работи
+        org.junit.Assert.assertTrue(sub.cues.isNotEmpty())
+        val err = runCatching { Srt.saveShifted(sub, 1.0, 1000) }.exceptionOrNull()
+        org.junit.Assert.assertNotNull("записът трябваше да се провали", err)
+        org.junit.Assert.assertEquals(Errors.SHARE_READ_ONLY, Errors.describe(err!!))
+    }
+}

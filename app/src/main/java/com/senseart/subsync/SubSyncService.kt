@@ -43,10 +43,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private var sub: SubtitleFile? = null
     private var model = SyncModel()
     private var clock: PlaybackClock? = null
-    private val manualClock = ManualClock()
 
-    /** true, ако ръчният часовник следва реалното време на филма (не е просто от нула). */
-    private var manualMeaningful = false
     private var sessionManager: MediaSessionManager? = null
 
     private var foregroundPkg: String? = null
@@ -82,7 +79,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         try {
             sessionManager?.addOnActiveSessionsChangedListener(sessionsListener, listenerComponent(), handler)
         } catch (e: SecurityException) {
-            Log.i(TAG, "Няма „Достъп до известия“ – ще се ползва ръчен часовник")
+            Log.i(TAG, "Няма „Достъп до известия“ – няма откъде да се вземе позицията на филма")
         }
         addSubtitleWindow()
         connectedAt = SystemClock.uptimeMillis()
@@ -187,7 +184,6 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
                 }
             }
 
-            Prefs.K_FORCE_MANUAL -> refreshClock()
             Prefs.K_VIDEO_AT -> onVideoOpened()
         }
     }
@@ -238,48 +234,26 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
     private fun videoNow(): Long? = clock?.positionMs()
 
-    /** Избира най-добрия източник на време: позицията от плейъра или ръчния часовник. */
+    /** Времето на филма идва само от ViMu (MediaSession). */
     private fun refreshClock() {
         if (!running) return
-        val old = clock
-        var next: PlaybackClock? = null
-        if (!prefs.forceManualClock) {
-            val controllers: List<MediaController> = try {
-                sessionManager?.getActiveSessions(listenerComponent())
-            } catch (e: SecurityException) {
-                null
-            } ?: emptyList()
-            // Само ViMu – никога друго приложение (YouTube, началният екран с трейлъри и т.н.).
-            val c = controllers.firstOrNull { it.packageName == Prefs.VIMU_PACKAGE }
-            if (c != null) {
-                if (old is SessionClock && old.controller.sessionToken == c.sessionToken && old.positionMs() != null) return
-                val sc = SessionClock(c, handler) { prefs.calibrationMs }
-                if (sc.positionMs() != null) {
-                    next = sc
-                    sc.onMetadata = { onPlayerMetadata(it) }
-                    onPlayerMetadata(sc.metadata)
-                } else sc.release()
-            }
+        val old = clock as? SessionClock
+        val controllers: List<MediaController> = try {
+            sessionManager?.getActiveSessions(listenerComponent())
+        } catch (e: SecurityException) {
+            null
+        } ?: emptyList()
+        // Само ViMu – никога друго приложение (YouTube, началният екран с трейлъри и т.н.).
+        val c = controllers.firstOrNull { it.packageName == Prefs.VIMU_PACKAGE }
+        if (c != null && old != null && old.controller.sessionToken == c.sessionToken) return
+        old?.release()
+        clock = null
+        if (c != null) {
+            val sc = SessionClock(c, handler) { prefs.calibrationMs }
+            clock = sc
+            sc.onMetadata = { onPlayerMetadata(it) }
+            onPlayerMetadata(sc.metadata)
         }
-        if (next == null) {
-            if (old === manualClock) return
-            // Продължаваме от последната известна позиция, за да няма скок.
-            val last = old?.positionMs()
-            if (last != null) {
-                manualClock.restart()
-                manualClock.setPosition(last, old.isPlaying())
-                manualMeaningful = true
-            }
-            next = manualClock
-        } else if (old === manualClock && manualMeaningful) {
-            // Преминаваме от ръчен часовник към плейъра: пазим вече направения синхрон.
-            val d = (next.positionMs() ?: 0L) - manualClock.positionMs()
-            model.nudge(d)
-            saveModel()
-        }
-        if (old is SessionClock && old !== next) old.release()
-        clock = next
-        if (page != Page.NONE) flash("Време от: ${next.label}")
     }
 
     // ---------------------------------------------------------------- цикъл на изобразяване
@@ -327,7 +301,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         if (page != Page.NONE && now - lastPanelRender > 200) renderPanel()
         if (now - lastClockCheck > 3000) {
             lastClockCheck = now
-            if (clock === manualClock && !prefs.forceManualClock) refreshClock()
+            if (clock == null) refreshClock()
         }
         if (foregroundPkg == null) {
             try {
@@ -342,7 +316,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
     private fun flash(msg: String) {
         status = msg
-        statusUntil = SystemClock.uptimeMillis() + 7000
+        statusUntil = SystemClock.uptimeMillis() + (7000L + msg.length * 60L).coerceAtMost(30_000L)
         if (page == Page.NONE) {
             Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
         } else renderPanel()
@@ -388,7 +362,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private fun dispatchToPage(e: KeyEvent): Boolean {
         return when (page) {
             Page.NONE -> {
-                observePlayerKey(e); false
+                false
             }
 
             Page.SYNC -> keySync(e)
@@ -472,17 +446,6 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         return true
     }
 
-    /** Ръчният часовник следи Play/Pause, докато панелът е затворен. */
-    private fun observePlayerKey(e: KeyEvent) {
-        if (clock !== manualClock || e.action != KeyEvent.ACTION_DOWN || e.repeatCount != 0) return
-        if (!isPlayerForeground()) return
-        when (e.keyCode) {
-            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK -> manualClock.toggle()
-            KeyEvent.KEYCODE_MEDIA_PLAY -> manualClock.resume()
-            KeyEvent.KEYCODE_MEDIA_PAUSE, KeyEvent.KEYCODE_MEDIA_STOP -> manualClock.pause()
-            else -> if (Keys.isOk(e.keyCode) && prefs.okPausesPlayer) manualClock.toggle()
-        }
-    }
 
     private fun onHotkey() {
         when (page) {
@@ -585,7 +548,6 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         val mark = markVideoMs ?: videoNow() ?: return
         val cue = s.cues[cueSel.coerceIn(0, s.cues.lastIndex)]
         val r = model.anchor(cue.startMs, mark)
-        if (clock === manualClock) manualMeaningful = true
         saveModel()
         followCurrent = true
         markVideoMs = null
@@ -629,16 +591,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             MenuItem({ "Субтитри: " + if (subsEnabled) "показани" else "скрити" }, ok = { subsEnabled = !subsEnabled }),
             MenuItem({ "Размер на текста: ${prefs.textSizeSp}      ◀ ▶" }, adjust = { d -> prefs.textSizeSp += 2 * d }),
             MenuItem({ "Височина от долу: ${prefs.bottomMarginDp}      ◀ ▶" }, adjust = { d -> prefs.bottomMarginDp += 8 * d }),
-            MenuItem({
-                "Време от: " + if (prefs.forceManualClock) "ръчен часовник (принудително)" else "автоматично (сега: ${clock?.label ?: "—"})"
-            }, ok = { prefs.forceManualClock = !prefs.forceManualClock }),
-            MenuItem({
-                if (clock === manualClock) "Ръчен часовник: " + (if (manualClock.isPlaying()) "▶ върви – OK за пауза" else "⏸ на пауза – OK за пускане")
-                else "Пауза / пусни филма"
-            }, ok = {
-                val c = clock
-                if (c is SessionClock) c.togglePlay() else manualClock.toggle()
-            }),
+            MenuItem({ "Пауза / пусни филма" }, ok = { (clock as? SessionClock)?.togglePlay() }),
             MenuItem({ "Корекция на позицията от плейъра: ${prefs.calibrationMs} ms      ◀ ▶" }, adjust = { d ->
                 prefs.calibrationMs += 50L * d
             }),
@@ -815,10 +768,6 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private fun onVideoOpened() {
         val uri = prefs.currentVideoUri ?: return
         val name = prefs.currentVideoName ?: SubtitleLocator.nameFromUri(uri)
-        if (clock === manualClock) {
-            manualClock.restart()
-            manualMeaningful = false
-        }
         autoLocate(uri, prefs.currentVideoData, name, strict = true)
     }
 
@@ -869,7 +818,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             val res = runCatching { Srt.load(f) }
             handler.post {
                 res.onSuccess { applyLoaded(f, it, quiet, announce) }
-                    .onFailure { if (announce) flash("Грешка при четене на ${f.name}: ${it.message}") }
+                    .onFailure { if (announce) flash("Грешка при четене на ${f.name}: " + Errors.describe(it)) }
             }
         }
     }
@@ -914,7 +863,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
                         saveModel()
                     }
                     flash("Записано в ${f.name}. Оригиналът е запазен като ${f.name}.bak")
-                }.onFailure { flash("Неуспешен запис: ${it.message}") }
+                }.onFailure { flash("Неуспешен запис. " + Errors.describe(it)) }
             }
         }
     }
@@ -970,7 +919,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         val info = buildString {
             append("Филм: ").append(if (v != null) SyncModel.formatClock(v) else "—")
             append(if (playing) " ▶" else " ⏸")
-            append("   Време от: ").append(c?.label ?: "—")
+            if (c == null || v == null) append("   ⚠ ViMu не съобщава позицията на филма")
             s?.file?.let { append("   ").append(it.name) }
         }
         val rows = ArrayList<PanelView.Row>()

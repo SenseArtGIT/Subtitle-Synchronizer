@@ -44,15 +44,6 @@ class Prefs(context: Context) {
         get() = sp.getString(K_PLAYER, VIMU_PACKAGE) ?: VIMU_PACKAGE
         set(v) = sp.edit().putString(K_PLAYER, v).apply()
 
-    var forceManualClock: Boolean
-        get() = sp.getBoolean(K_FORCE_MANUAL, false)
-        set(v) = sp.edit().putBoolean(K_FORCE_MANUAL, v).apply()
-
-    /** Ако OK на дистанционното слага пауза във ViMu (важи само за ръчния часовник). */
-    var okPausesPlayer: Boolean
-        get() = sp.getBoolean(K_OK_PAUSES, false)
-        set(v) = sp.edit().putBoolean(K_OK_PAUSES, v).apply()
-
     /** Мрежовите папки (паролата се пази само на това устройство). */
     var shares: List<SmbShare>
         get() {
@@ -132,8 +123,6 @@ class Prefs(context: Context) {
         const val K_LAST_DIR = "last_dir"
         const val K_LAST_FILE = "last_file"
         const val K_PLAYER = "player_pkg"
-        const val K_FORCE_MANUAL = "force_manual"
-        const val K_OK_PAUSES = "ok_pauses"
         const val K_SHARES = "smb_shares"
         const val K_HOLD = "hold_hotkey"
         const val K_AUTO_A11Y = "auto_a11y"

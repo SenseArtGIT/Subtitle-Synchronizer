@@ -36,8 +36,6 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     private lateinit var marginLabel: TextView
     private lateinit var defOffsetLabel: TextView
     private lateinit var calibLabel: TextView
-    private lateinit var okPauseBtn: Button
-    private lateinit var manualBtn: Button
     private lateinit var holdBtn: Button
     private lateinit var autoBtn: Button
     private lateinit var healStatus: TextView
@@ -172,8 +170,6 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
             button("−50 ms") { prefs.calibrationMs -= 50 },
             button("+50 ms") { prefs.calibrationMs += 50 },
         )
-        manualBtn = button("") { prefs.forceManualClock = !prefs.forceManualClock }
-        okPauseBtn = button("") { prefs.okPausesPlayer = !prefs.okPausesPlayer }
 
         section("Обновяване")
         updateStatus = text("", 16f, Color.WHITE)
@@ -513,7 +509,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         autoBtn.text = "Режим на „Достъпност“: " +
             if (prefs.autoA11y) "само докато гледам филм (препоръчително)" else "винаги включена"
         notifStatus.text = mark(isNotificationAccessOn()) +
-            "Достъп до известия (позицията на филма от ViMu; без него – ръчен часовник)"
+            "Достъп до известия (позицията на филма от ViMu – задължително)"
         filesStatus.text = mark(hasFilesAccess()) + "Достъп до всички файлове (четене и запис на .srt)"
         healStatus.text = mark(SelfHeal.canWriteSecure(this)) +
             "Включване на „Достъпност“ без компютър (и автоматично след обновяване)" +
@@ -527,8 +523,6 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         marginLabel.text = "Височина от долния край: ${prefs.bottomMarginDp}"
         defOffsetLabel.text = "Отместване по подразбиране за нови файлове: ${SyncModel.formatOffset(prefs.defaultOffsetMs)}"
         calibLabel.text = "Корекция на позицията от плейъра: ${prefs.calibrationMs} ms"
-        manualBtn.text = "Време от: " + if (prefs.forceManualClock) "винаги ръчен часовник" else "автоматично"
-        okPauseBtn.text = "OK слага пауза във ViMu (за ръчния часовник): " + if (prefs.okPausesPlayer) "да" else "не"
     }
 
     private fun mark(ok: Boolean) = if (ok) "✅  " else "❌  "
