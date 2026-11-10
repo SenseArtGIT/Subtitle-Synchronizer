@@ -108,8 +108,40 @@ class Prefs(context: Context) {
         return SyncModel(off, scale)
     }
 
+    /**
+     * Запомня синхрона за .srt файла [path]. Ако синхронът е „нулев“ (отместването по
+     * подразбиране и 100% скорост), запис не се пази – старият се изтрива.
+     */
     fun saveModel(path: String, m: SyncModel) {
+        if (m.offsetMs == defaultOffsetMs && kotlin.math.abs(m.scale - 1.0) < 1e-9) {
+            sp.edit().remove("off:$path").remove("scale:$path").apply()
+            return
+        }
         sp.edit().putLong("off:$path", m.offsetMs).putString("scale:$path", m.scale.toString()).apply()
+    }
+
+    /** Брой запомнени синхронизации и приблизителният им размер в байтове. */
+    fun syncStats(): Pair<Int, Long> {
+        var count = 0
+        var bytes = 0L
+        for ((k, v) in sp.all) {
+            if (k.startsWith("off:") || k.startsWith("scale:")) {
+                if (k.startsWith("off:")) count++
+                // Приблизително колкото заема редът във файла с настройки.
+                bytes += 30 + k.toByteArray(Charsets.UTF_8).size + v.toString().length
+            }
+        }
+        return count to bytes
+    }
+
+    /** Изтрива всички запомнени синхронизации (другите настройки остават). Връща броя им. */
+    fun clearSyncs(): Int {
+        val keys = sp.all.keys.filter { it.startsWith("off:") || it.startsWith("scale:") }
+        val e = sp.edit()
+        keys.forEach { e.remove(it) }
+        e.putLong(K_SYNCS_CLEARED, System.currentTimeMillis())
+        e.apply()
+        return keys.count { it.startsWith("off:") }
     }
 
     companion object {
@@ -126,6 +158,15 @@ class Prefs(context: Context) {
         const val K_SHARES = "smb_shares"
         const val K_HOLD = "hold_hotkey"
         const val K_AUTO_A11Y = "auto_a11y"
+        const val K_SYNCS_CLEARED = "syncs_cleared"
+
+        fun formatBytes(b: Long): String = when {
+            b < 1024 -> "$b байта"
+            b < 1024 * 1024 -> "%.1f KB".format(b / 1024.0)
+            else -> "%.1f MB".format(b / 1024.0 / 1024.0)
+        }
+
+        fun filmsWord(n: Int) = if (n == 1) "1 филм" else "$n филма"
         const val K_VIDEO_URI = "video_uri"
         const val K_VIDEO_NAME = "video_name"
         const val K_VIDEO_DATA = "video_data"

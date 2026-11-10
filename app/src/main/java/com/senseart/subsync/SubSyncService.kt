@@ -185,6 +185,8 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             }
 
             Prefs.K_VIDEO_AT -> onVideoOpened()
+            // Изчистени са всички запомнени синхронизации – нулираме и текущия филм.
+            Prefs.K_SYNCS_CLEARED -> model.reset(prefs.defaultOffsetMs)
         }
     }
 

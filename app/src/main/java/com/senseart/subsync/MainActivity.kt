@@ -38,6 +38,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     private lateinit var calibLabel: TextView
     private lateinit var holdBtn: Button
     private lateinit var autoBtn: Button
+    private lateinit var clearSyncsBtn: Button
     private lateinit var healStatus: TextView
     private lateinit var updateStatus: TextView
     private lateinit var updateBtn: Button
@@ -169,6 +170,13 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         row(
             button("−50 ms") { prefs.calibrationMs -= 50 },
             button("+50 ms") { prefs.calibrationMs += 50 },
+        )
+        clearSyncsBtn = button("") { confirmClearSyncs() }
+        text(
+            "Приложението помни отместването и скоростта за всеки .srt файл, който сте " +
+                "синхронизирали (без да сте го записали във файла). Изчистването трие само тях – " +
+                "мрежовите папки, бутонът и другите настройки остават.",
+            14f, 0xFFB0B8C0.toInt(),
         )
 
         section("Обновяване")
@@ -496,7 +504,31 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         b.show()
     }
 
+    private fun confirmClearSyncs() {
+        val (n, bytes) = prefs.syncStats()
+        if (n == 0) {
+            Toast.makeText(this, "Няма запомнени синхронизации", Toast.LENGTH_SHORT).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Изчистване на запомнените синхронизации")
+            .setMessage(
+                "Ще се изтрие запомненият синхрон за ${Prefs.filmsWord(n)} (${Prefs.formatBytes(bytes)}). " +
+                    "Синхроните, записани в самите .srt файлове, не се засягат. Продължаване?"
+            )
+            .setPositiveButton("Изчисти") { _, _ ->
+                val cleared = prefs.clearSyncs()
+                Toast.makeText(this, "Изчистени: ${Prefs.filmsWord(cleared)}", Toast.LENGTH_SHORT).show()
+                updateLabels()
+            }
+            .setNegativeButton("Отказ", null)
+            .show()
+    }
+
     private fun updateLabels() {
+        val (syncCount, syncBytes) = prefs.syncStats()
+        clearSyncsBtn.text = "Изчисти запомнените синхронизации за всички филми до момента (" +
+            (if (syncCount == 0) "няма запомнени" else "${Prefs.filmsWord(syncCount)}, ${Prefs.formatBytes(syncBytes)}") + ")"
         refreshShares()
         val a11y = isAccessibilityOn()
         a11yStatus.text = if (prefs.autoA11y) {
