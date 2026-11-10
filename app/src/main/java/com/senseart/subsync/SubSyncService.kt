@@ -205,7 +205,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             } catch (e: SecurityException) {
                 null
             } ?: emptyList()
-            val c = controllers.firstOrNull { it.packageName == prefs.playerPackage }
+            val c = controllers.firstOrNull { it.packageName == Prefs.VIMU_PACKAGE }
                 ?: controllers.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING }
             if (c != null) {
                 if (old is SessionClock && old.controller.sessionToken == c.sessionToken && old.positionMs() != null) return
@@ -254,9 +254,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private fun update() {
         val now = SystemClock.uptimeMillis()
         val s = sub
-        val fg = foregroundPkg
-        val show = s != null && subsEnabled &&
-            (page != Page.NONE || fg == null || fg == prefs.playerPackage)
+        val show = s != null && subsEnabled && (page != Page.NONE || isPlayerForeground())
         val v = videoNow()
         if (show && v != null) {
             val t = model.cueTimeAt(v)
@@ -296,12 +294,21 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         if (prefs.learning) return learnKey(e)
 
         val hot = prefs.hotkey
-        if (hot != 0 && code == hot) {
+        // Бутонът за панела се прихваща само докато плейърът е на екрана (или панелът е отворен).
+        // Навсякъде другаде дистанционното работи без никаква намеса.
+        if (hot != 0 && code == hot && (page != Page.NONE || isPlayerForeground() || holdConsumed || holdFired)) {
             if (prefs.holdHotkey) return holdHotkey(e)
             if (e.action == KeyEvent.ACTION_UP) onHotkey()
             return true
         }
         return dispatchToPage(e)
+    }
+
+    /** Пакетите на плейъра: ViMu и приложението, чиято позиция четем (MediaSession). */
+    private fun isPlayerForeground(): Boolean {
+        val session = (clock as? SessionClock)?.controller?.packageName
+        val fg = foregroundPkg ?: return session != null // още не знаем кое е отпред
+        return fg == Prefs.VIMU_PACKAGE || fg == session
     }
 
     private fun dispatchToPage(e: KeyEvent): Boolean {
@@ -392,7 +399,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     /** Ръчният часовник следи Play/Pause, докато панелът е затворен. */
     private fun observePlayerKey(e: KeyEvent) {
         if (clock !== manualClock || e.action != KeyEvent.ACTION_DOWN || e.repeatCount != 0) return
-        if (foregroundPkg != null && foregroundPkg != prefs.playerPackage) return
+        if (!isPlayerForeground()) return
         when (e.keyCode) {
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK -> manualClock.toggle()
             KeyEvent.KEYCODE_MEDIA_PLAY -> manualClock.resume()
@@ -404,8 +411,6 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private fun onHotkey() {
         when (page) {
             Page.NONE -> {
-                val fg = foregroundPkg
-                if (fg != null && fg != packageName) prefs.playerPackage = fg
                 refreshClock()
                 ensurePanel().visibility = View.VISIBLE
                 if (sub == null || currentFileLooksWrong()) openFiles() else openSync()
