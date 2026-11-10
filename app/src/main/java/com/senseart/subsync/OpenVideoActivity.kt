@@ -25,8 +25,9 @@ class OpenVideoActivity : Activity() {
         }
         val prefs = Prefs(this)
         prefs.setCurrentVideo(uri.toString(), displayName(uri), dataColumn(uri))
-        // Включваме „Достъпност“ само за времето на филма (изключва се сама след него).
-        if (prefs.autoA11y) SelfHeal.ensureAccessibility(this)
+        // „Достъпност“ се включва 10 с след пускането на филма (изключва се сама при излизане от ViMu).
+        // Така при бързо прескачане между филми не се включва и изключва всеки път.
+        if (prefs.autoA11y && !SelfHeal.isAccessibilityOn(this)) SelfHeal.enableLater(this, 10_000)
 
         val fwd = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, src.type ?: guessType(uri))

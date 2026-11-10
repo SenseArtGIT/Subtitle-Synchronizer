@@ -107,26 +107,28 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     // ---------------------------------------------------------------- само докато гледам филм
 
     private var connectedAt = 0L
-    private var notPlayerSince = 0L
 
     /**
-     * В режим „само докато гледам филм“: щом ViMu не е на екрана няколко секунди,
-     * услугата се изключва сама, за да не пречи на началния екран.
+     * В режим „само докато гледам филм“: щом друго приложение (не ViMu) е на екрана,
+     * услугата се изключва веднага, за да не пречи на началния екран. Ако още не се знае
+     * кое е отпред, се чака до 10 с ViMu да се появи.
      */
     private fun autoDisableCheck(now: Long) {
-        if (!prefs.autoA11y || prefs.learning || page != Page.NONE) {
-            notPlayerSince = 0; return
-        }
-        val justOpened = System.currentTimeMillis() - prefs.currentVideoAt < 30_000
-        if (isPlayerForeground() || justOpened || now - connectedAt < 10_000) {
-            notPlayerSince = 0; return
-        }
-        if (notPlayerSince == 0L) notPlayerSince = now
-        if (now - notPlayerSince > 4_000) {
+        if (!prefs.autoA11y || prefs.learning || page != Page.NONE) return
+        if (isPlayerForeground()) return
+        if (foregroundPkg != null || now - connectedAt > 10_000) {
             Log.i(TAG, "ViMu не е на екрана – изключвам „Достъпност“")
             shutdown()
             disableSelf()
         }
+    }
+
+    /** Пакетът на клавиатурата на екрана – прозорците ѝ не означават, че сме излезли от ViMu. */
+    private fun imePackage(): String? = try {
+        android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.DEFAULT_INPUT_METHOD)
+            ?.substringBefore('/')
+    } catch (_: Exception) {
+        null
     }
 
     override fun onUnbind(intent: android.content.Intent?): Boolean {
@@ -168,7 +170,10 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         val pkg = event.packageName?.toString() ?: return
         if (pkg == packageName || pkg == "com.android.systemui" || pkg == "android") return
         if (event.className?.toString()?.contains("Toast") == true) return
+        if (pkg == imePackage()) return
         foregroundPkg = pkg
+        // Излизане от ViMu – изключваме веднага, без да чакаме следващия цикъл.
+        if (running) autoDisableCheck(SystemClock.uptimeMillis())
     }
 
     override fun onSharedPreferenceChanged(sp: SharedPreferences?, key: String?) {

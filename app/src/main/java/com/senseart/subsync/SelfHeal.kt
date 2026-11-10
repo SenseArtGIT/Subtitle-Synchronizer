@@ -1,11 +1,15 @@
 package com.senseart.subsync
 
 import android.Manifest
+import android.app.AlarmManager
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 
@@ -29,6 +33,26 @@ object SelfHeal {
     fun canWriteSecure(ctx: Context) =
         ctx.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
 
+    /**
+     * Включва „Достъпност“ след [delayMs]. Ново извикване заменя старото
+     * (включва се само веднъж – след последния отворен филм).
+     */
+    fun enableLater(ctx: Context, delayMs: Long) {
+        val am = ctx.getSystemService(AlarmManager::class.java) ?: return
+        val pi = PendingIntent.getBroadcast(
+            ctx, 7, Intent(ctx, EnableA11yReceiver::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val at = SystemClock.elapsedRealtime() + delayMs
+        val exact = Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()
+        try {
+            if (exact) am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pi)
+            else am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pi)
+        } catch (e: SecurityException) {
+            am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pi)
+        }
+    }
+
     /** Включва услугата, ако е изключена и имаме право. Връща true, ако я е включила сега. */
     fun ensureAccessibility(ctx: Context): Boolean {
         if (isAccessibilityOn(ctx) || !canWriteSecure(ctx)) return false
@@ -45,6 +69,13 @@ object SelfHeal {
             Log.w(TAG, "ensureAccessibility", e)
             false
         }
+    }
+}
+
+/** Отложеното включване след пускане на филм. */
+class EnableA11yReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (Prefs(context).autoA11y) SelfHeal.ensureAccessibility(context)
     }
 }
 
