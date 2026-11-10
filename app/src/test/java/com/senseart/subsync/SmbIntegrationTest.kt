@@ -69,5 +69,6 @@ class SmbReadOnlyTest {
         val err = runCatching { Srt.saveShifted(sub, 1.0, 1000) }.exceptionOrNull()
         org.junit.Assert.assertNotNull("записът трябваше да се провали", err)
         org.junit.Assert.assertEquals(Errors.SHARE_READ_ONLY, Errors.describe(err!!))
+        org.junit.Assert.assertTrue(Errors.isPermission(err))
     }
 }

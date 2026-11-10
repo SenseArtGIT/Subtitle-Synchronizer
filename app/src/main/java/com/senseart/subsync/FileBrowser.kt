@@ -10,7 +10,7 @@ import java.util.Locale
  */
 class FileBrowser {
 
-    enum class Kind { UP, DIR, FILE, SUGGESTION, INFO }
+    enum class Kind { UP, DIR, FILE, SUGGESTION, INFO, SAVE_HERE }
 
     data class Entry(val file: VFile?, val label: String, val kind: Kind)
 
@@ -69,8 +69,15 @@ class FileBrowser {
             suggestions: List<VFile>,
             recent: VFile?,
             shares: List<SmbShare>,
+            foldersOnly: Boolean = false,
+            saveName: String = "",
         ): List<Entry> {
             val list = ArrayList<Entry>()
+            if (d == null && foldersOnly) {
+                // Избор на папка за копие: само вътрешната памет и USB/карти на приставката.
+                for (r in localRoots()) list.add(Entry(r, rootLabel(r), Kind.DIR))
+                return list
+            }
             if (d == null) {
                 for (f in suggestions) list.add(Entry(f, "★ " + f.name + "   (" + shortParent(f) + ")", Kind.SUGGESTION))
                 if (recent != null) list.add(Entry(recent, "◷ Последна папка: " + recent.name, Kind.DIR))
@@ -81,6 +88,7 @@ class FileBrowser {
                 return list
             }
             list.add(Entry(d.parent, "⬑ ..", Kind.UP))
+            if (foldersOnly) list.add(Entry(d, "💾 Запиши тук:  $saveName", Kind.SAVE_HERE))
             val children = d.list()
             if (children == null) {
                 val why = if (d is SmbFile) "(няма връзка с компютъра или няма достъп)"
@@ -91,9 +99,11 @@ class FileBrowser {
             children.filter { it.isDirectory && !it.name.startsWith(".") && !it.name.startsWith("$") }
                 .sortedBy { it.name.lowercase(Locale.ROOT) }
                 .forEach { list.add(Entry(it, "▸ " + it.name, Kind.DIR)) }
-            children.filter { !it.isDirectory && SubtitleLocator.isSubtitle(it.name) }
-                .sortedBy { it.name.lowercase(Locale.ROOT) }
-                .forEach { list.add(Entry(it, it.name, Kind.FILE)) }
+            if (!foldersOnly) {
+                children.filter { !it.isDirectory && SubtitleLocator.isSubtitle(it.name) }
+                    .sortedBy { it.name.lowercase(Locale.ROOT) }
+                    .forEach { list.add(Entry(it, it.name, Kind.FILE)) }
+            }
             if (list.size == 1) list.add(Entry(null, "(няма папки и .srt файлове)", Kind.INFO))
             return list
         }

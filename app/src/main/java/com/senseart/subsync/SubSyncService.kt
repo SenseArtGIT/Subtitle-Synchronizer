@@ -465,6 +465,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     }
 
     private fun openSync() {
+        saveSnapshot = null
         page = Page.SYNC
         followCurrent = true
         markVideoMs = null
@@ -472,6 +473,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     }
 
     private fun closePanel(swallowKey: Int = -1) {
+        saveSnapshot = null
         page = Page.NONE
         followCurrent = true
         markVideoMs = null
@@ -649,6 +651,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
     private fun openFiles() {
         page = Page.FILES
+        saveSnapshot = null
         browse(null)
         // Допълнителни предложения по името на филма, който плейърът съобщава.
         val md = currentMetadata()
@@ -681,8 +684,12 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         val shares = prefs.shares
         val recent = recentDir(shares)
         io.execute {
+            val snap = saveSnapshot
             val list = try {
-                FileBrowser.build(d, sugg, recent, shares)
+                FileBrowser.build(
+                    d, sugg, recent, shares,
+                    foldersOnly = snap != null, saveName = snap?.sub?.file?.name ?: "",
+                )
             } catch (e: Exception) {
                 listOf(FileBrowser.Entry(null, "Грешка: ${e.message}", FileBrowser.Kind.INFO))
             }
@@ -721,6 +728,9 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
                         FileBrowser.Kind.DIR -> entry.file?.let { browse(it) }
                         FileBrowser.Kind.FILE, FileBrowser.Kind.SUGGESTION ->
                             if (Keys.isOk(e.keyCode)) entry.file?.let { loadFile(it, quiet = false) }
+
+                        FileBrowser.Kind.SAVE_HERE ->
+                            if (Keys.isOk(e.keyCode)) entry.file?.let { saveCopyTo(it) }
 
                         else -> {}
                     }
@@ -863,7 +873,47 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
                         saveModel()
                     }
                     flash("Записано в ${f.name}. Оригиналът е запазен като ${f.name}.bak")
-                }.onFailure { flash("Неуспешен запис. " + Errors.describe(it)) }
+                }.onFailure {
+                    if (Errors.isPermission(it) && page != Page.NONE) {
+                        // Няма право да пише до оригинала – предлагаме копие във вътрешната памет.
+                        saveSnapshot = SaveSnapshot(s, scale, offset)
+                        openSaveFolder()
+                        flash(
+                            "Не може да се запише до оригинала: " + Errors.describe(it) +
+                                "  Изберете папка на приставката за синхронизирано копие."
+                        )
+                    } else {
+                        flash("Неуспешен запис. " + Errors.describe(it))
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- копие във вътрешната памет
+
+    private class SaveSnapshot(val sub: SubtitleFile, val scale: Double, val offsetMs: Long)
+
+    /** Синхронът, който чака да се запише като копие (докато се избира папка). */
+    private var saveSnapshot: SaveSnapshot? = null
+
+    private fun openSaveFolder() {
+        page = Page.FILES
+        val internal = java.io.File("/storage/emulated/0")
+        browse(if (internal.isDirectory) LocalFile(internal) else null)
+    }
+
+    private fun saveCopyTo(dir: VFile) {
+        val snap = saveSnapshot ?: return
+        flash("Записване…")
+        io.execute {
+            val res = runCatching { Srt.saveCopy(snap.sub, snap.scale, snap.offsetMs, dir) }
+            handler.post {
+                res.onSuccess { out ->
+                    saveSnapshot = null
+                    if (sub != null) openSync() else closePanel()
+                    flash("Записано копие: ${out.path}  (оригиналът не е променян)")
+                }.onFailure { flash("Неуспешен запис: " + Errors.describe(it)) }
             }
         }
     }
@@ -897,13 +947,23 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
                 val rows = window(browser.entries.size, browser.sel) { i ->
                     PanelView.Row(browser.entries[i].label, selected = i == browser.sel)
                 }
-                p.show(
-                    "Изберете .srt файл",
-                    browser.dir?.path ?: "Предложения (★), устройства и мрежови папки",
-                    rows,
-                    "▲▼ избор   OK отвори   ◀ или BACK нагоре   [$hot] отказ",
-                    status,
-                )
+                if (saveSnapshot != null) {
+                    p.show(
+                        "Изберете папка за синхронизираното копие",
+                        browser.dir?.path ?: "Вътрешна памет и USB устройства",
+                        rows,
+                        "▲▼ избор   OK отвори / „💾 Запиши тук“   ◀ или BACK нагоре   [$hot] отказ",
+                        status,
+                    )
+                } else {
+                    p.show(
+                        "Изберете .srt файл",
+                        browser.dir?.path ?: "Предложения (★), устройства и мрежови папки",
+                        rows,
+                        "▲▼ избор   OK отвори   ◀ или BACK нагоре   [$hot] отказ",
+                        status,
+                    )
+                }
             }
 
             Page.NONE -> {}

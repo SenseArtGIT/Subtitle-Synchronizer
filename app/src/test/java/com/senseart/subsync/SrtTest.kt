@@ -78,4 +78,43 @@ class SrtTest {
             dir.deleteRecursively()
         }
     }
+
+    @Test
+    fun saveCopyWritesSameNameWithoutBackup() {
+        val src = createTempDir()
+        val dst = createTempDir()
+        try {
+            val f = File(src, "film.srt")
+            f.writeBytes(sample.toByteArray(Charset.forName("windows-1251")))
+            val sub = Srt.load(f)
+            val out = Srt.saveCopy(sub, 1.0, 2_000, LocalFile(dst))
+            assertEquals(File(dst, "film.srt").absolutePath, out.path)
+            assertTrue(!File(dst, "film.srt.bak").exists())
+            assertTrue(!File(src, "film.srt.bak").exists())
+            // оригиналът не е пипнат
+            assertEquals(1500L, Srt.load(f).cues[0].startMs)
+            val copy = Srt.load(File(dst, "film.srt"))
+            assertEquals(3500L, copy.cues[0].startMs)
+            assertEquals("windows-1251", copy.charset.name())
+        } finally {
+            src.deleteRecursively(); dst.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun folderPickerListsOnlyFoldersAndSaveHere() {
+        val d = createTempDir()
+        try {
+            File(d, "Sub1").mkdirs()
+            File(d, "x.srt").writeText("")
+            val list = FileBrowser.build(LocalFile(d), emptyList(), null, emptyList(), foldersOnly = true, saveName = "film.srt")
+            assertEquals(FileBrowser.Kind.UP, list[0].kind)
+            assertEquals(FileBrowser.Kind.SAVE_HERE, list[1].kind)
+            assertTrue(list[1].label.contains("film.srt"))
+            assertTrue(list.none { it.kind == FileBrowser.Kind.FILE })
+            assertTrue(list.any { it.kind == FileBrowser.Kind.DIR && it.label.contains("Sub1") })
+        } finally {
+            d.deleteRecursively()
+        }
+    }
 }

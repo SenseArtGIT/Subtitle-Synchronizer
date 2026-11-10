@@ -149,6 +149,21 @@ object Srt {
         val dir = f.parent ?: error("Няма папка")
         val bak = dir.child(f.name + ".bak")
         if (!bak.exists()) bak.writeBytes(f.readBytes())
+        f.writeBytes(encode(sub, scale, offsetMs))
+    }
+
+    /**
+     * Записва синхронизирано копие в [dir] със същото име като оригинала (без .bak –
+     * оригиналът си остава непроменен на мястото си). Връща записания файл.
+     */
+    fun saveCopy(sub: SubtitleFile, scale: Double, offsetMs: Long, dir: VFile): VFile {
+        val out = dir.child(sub.file?.name ?: "subtitles.srt")
+        out.writeBytes(encode(sub, scale, offsetMs))
+        return out
+    }
+
+    /** Текстът с приложен синхрон, в кодировката на оригинала (и с BOM, ако го е имало). */
+    fun encode(sub: SubtitleFile, scale: Double, offsetMs: Long): ByteArray {
         val body = render(sub.cues, scale, offsetMs).toByteArray(sub.charset)
         val bom = when {
             !sub.hadBom -> ByteArray(0)
@@ -157,6 +172,6 @@ object Srt {
             sub.charset == Charsets.UTF_16BE -> byteArrayOf(0xFE.toByte(), 0xFF.toByte())
             else -> ByteArray(0)
         }
-        f.writeBytes(bom + body)
+        return bom + body
     }
 }

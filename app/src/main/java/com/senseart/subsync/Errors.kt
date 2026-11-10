@@ -14,6 +14,23 @@ object Errors {
             "Permissions (Разрешения) → за вашия потребител или Everyone отметнете „Change“ (Промяна). " +
             "В раздел Security (Защита) същият потребител трябва да има „Modify“ (Промяна)."
 
+    /** Дали грешката е забрана за запис (а не напр. прекъсната връзка). */
+    fun isPermission(e: Throwable): Boolean {
+        val chain = generateSequence(e) { it.cause }.take(10).toList()
+        chain.filterIsInstance<SMBApiException>().firstOrNull()?.let {
+            return it.status == NtStatus.STATUS_ACCESS_DENIED || it.status == NtStatus.STATUS_CANNOT_DELETE
+        }
+        return localDenied(chain)
+    }
+
+    private fun localDenied(chain: List<Throwable>) = chain.any {
+        it is SecurityException ||
+            it is java.nio.file.AccessDeniedException ||
+            ((it is FileNotFoundException || it is IOException) &&
+                (it.message?.contains("EACCES") == true || it.message?.contains("EROFS") == true ||
+                    it.message?.contains("Permission denied") == true || it.message?.contains("Read-only") == true))
+    }
+
     fun describe(e: Throwable): String {
         val chain = generateSequence(e) { it.cause }.take(10).toList()
         chain.filterIsInstance<SMBApiException>().firstOrNull()?.let { smb ->
@@ -26,14 +43,7 @@ object Errors {
                 else -> "Грешка от компютъра: ${smb.status}"
             }
         }
-        val denied = chain.any {
-            it is SecurityException ||
-                it is java.nio.file.AccessDeniedException ||
-                ((it is FileNotFoundException || it is IOException) &&
-                    (it.message?.contains("EACCES") == true || it.message?.contains("EROFS") == true ||
-                        it.message?.contains("Permission denied") == true || it.message?.contains("Read-only") == true))
-        }
-        if (denied) {
+        if (localDenied(chain)) {
             return "Няма разрешение за запис в тази папка на приставката/USB устройството. " +
                 "Проверете „Достъп до всички файлове“ и дали устройството не е само за четене."
         }
