@@ -39,6 +39,11 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     private lateinit var okPauseBtn: Button
     private lateinit var manualBtn: Button
     private lateinit var holdBtn: Button
+    private lateinit var healStatus: TextView
+    private lateinit var updateStatus: TextView
+    private lateinit var updateBtn: Button
+    private var latest: Updater.Release? = null
+    private var updating = false
     private lateinit var sharesBox: LinearLayout
 
     private fun dp(v: Int) =
@@ -79,6 +84,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         }
         notifStatus = text("", 16f, Color.WHITE)
         button("Отвори „Достъп до известия“") { open(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS) }
+        healStatus = text("", 16f, Color.WHITE)
         filesStatus = text("", 16f, Color.WHITE)
         button("Отвори „Достъп до всички файлове“") {
             if (!open(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName")))
@@ -147,6 +153,16 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         manualBtn = button("") { prefs.forceManualClock = !prefs.forceManualClock }
         okPauseBtn = button("") { prefs.okPausesPlayer = !prefs.okPausesPlayer }
 
+        section("Обновяване")
+        updateStatus = text("", 16f, Color.WHITE)
+        updateBtn = button("Провери за нова версия") { onUpdateClick() }
+        text(
+            "Обновявайте оттук, а не с APK през файловия мениджър – така Android не изключва " +
+                "„Достъпност“. Първия път Android ще поиска разрешение приложението да инсталира " +
+                "обновления (Инсталиране на неизвестни приложения).",
+            14f, 0xFFB0B8C0.toInt(),
+        )
+
         section("Как се ползва")
         text(HELP.trimIndent(), 15f, 0xFFD0D6DC.toInt())
         text("Версия ${packageManager.getPackageInfo(packageName, 0).versionName}", 13f, 0xFF707880.toInt())
@@ -155,7 +171,82 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     override fun onResume() {
         super.onResume()
         prefs.sp.registerOnSharedPreferenceChangeListener(this)
+        if (SelfHeal.ensureAccessibility(this)) {
+            Toast.makeText(this, "„Достъпност“ е включена отново автоматично", Toast.LENGTH_LONG).show()
+        }
         updateLabels()
+        // Тиха проверка за нова версия (най-много веднъж на 6 часа).
+        val last = prefs.sp.getLong("update_check", 0)
+        if (latest == null && System.currentTimeMillis() - last > 6 * 3600_000L) checkUpdate(silent = true)
+    }
+
+    // ---------------------------------------------------------------- обновяване
+
+    private fun currentVersion(): String = packageManager.getPackageInfo(packageName, 0).versionName ?: "0"
+
+    private fun checkUpdate(silent: Boolean) {
+        if (!silent) updateStatus.text = "Проверка…"
+        Thread {
+            val res = runCatching { Updater.fetchLatest() }
+            runOnUiThread {
+                prefs.sp.edit().putLong("update_check", System.currentTimeMillis()).apply()
+                res.onSuccess { rel ->
+                    latest = rel
+                    updateUpdateLabels()
+                    if (!silent && (rel == null || !Updater.isNewer(rel.version, currentVersion()))) {
+                        Toast.makeText(this, "Имате последната версия", Toast.LENGTH_SHORT).show()
+                    }
+                }.onFailure {
+                    if (!silent) updateStatus.text = "Неуспешна проверка: ${it.message}"
+                }
+            }
+        }.start()
+    }
+
+    private fun updateUpdateLabels() {
+        if (updating) return
+        val rel = latest
+        val cur = currentVersion()
+        if (rel != null && Updater.isNewer(rel.version, cur)) {
+            updateStatus.text = "🔔 Налична е нова версия ${rel.version} (сега: $cur)"
+            updateBtn.text = "Изтегли и инсталирай ${rel.version}"
+        } else {
+            updateStatus.text = "Версия $cur" + if (rel != null) " – последна" else ""
+            updateBtn.text = "Провери за нова версия"
+        }
+    }
+
+    private fun onUpdateClick() {
+        val rel = latest
+        if (updating) return
+        if (rel == null || !Updater.isNewer(rel.version, currentVersion())) {
+            checkUpdate(silent = false); return
+        }
+        if (!packageManager.canRequestPackageInstalls()) {
+            Toast.makeText(
+                this, "Разрешете на Subtitle Synchronizer да инсталира приложения и натиснете пак „Изтегли“",
+                Toast.LENGTH_LONG,
+            ).show()
+            if (!open(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))) {
+                updateStatus.text = "Отворете Настройки → Приложения → Специален достъп → Инсталиране на " +
+                    "неизвестни приложения → Subtitle Synchronizer → Разреши (или adb командата по-горе)."
+            }
+            return
+        }
+        updating = true
+        updateStatus.text = "Изтегляне… 0%"
+        val apk = java.io.File(cacheDir, "update.apk")
+        Thread {
+            val res = runCatching {
+                Updater.download(rel, apk) { p -> runOnUiThread { updateStatus.text = "Изтегляне… $p%" } }
+                runOnUiThread { updateStatus.text = "Инсталиране…" }
+                Updater.install(this, apk)
+            }
+            runOnUiThread {
+                updating = false
+                res.onFailure { updateStatus.text = "Неуспешно обновяване: ${it.message}" }
+            }
+        }.start()
     }
 
     override fun onPause() {
@@ -398,6 +489,10 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         notifStatus.text = mark(isNotificationAccessOn()) +
             "Достъп до известия (позицията на филма от ViMu; без него – ръчен часовник)"
         filesStatus.text = mark(hasFilesAccess()) + "Достъп до всички файлове (четене и запис на .srt)"
+        healStatus.text = mark(SelfHeal.canWriteSecure(this)) +
+            "Автоматично включване на „Достъпност“ след обновяване" +
+            if (SelfHeal.canWriteSecure(this)) "" else " (еднократна adb команда – вижте по-долу)"
+        updateUpdateLabels()
         hotkeyLabel.text = if (prefs.learning) "Натиснете сега бутона на дистанционното…"
         else "Бутон за панела: ${Keys.name(prefs.hotkey)}"
         holdBtn.text = "Отваряне на панела: " +
@@ -412,10 +507,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
 
     private fun mark(ok: Boolean) = if (ok) "✅  " else "❌  "
 
-    private fun isAccessibilityOn(): Boolean {
-        val s = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: ""
-        return s.split(':').any { it.startsWith("$packageName/") }
-    }
+    private fun isAccessibilityOn(): Boolean = SelfHeal.isAccessibilityOn(this)
 
     private fun isNotificationAccessOn(): Boolean {
         val s = Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: ""
@@ -471,6 +563,8 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
 
     companion object {
         const val ADB_COMMANDS = """
+            adb shell pm grant com.senseart.subsync android.permission.WRITE_SECURE_SETTINGS
+            adb shell appops set com.senseart.subsync REQUEST_INSTALL_PACKAGES allow
             adb shell appops set com.senseart.subsync ACCESS_RESTRICTED_SETTINGS allow
             adb shell appops set com.senseart.subsync MANAGE_EXTERNAL_STORAGE allow
             adb shell cmd notification allow_listener com.senseart.subsync/com.senseart.subsync.MediaListenerService
