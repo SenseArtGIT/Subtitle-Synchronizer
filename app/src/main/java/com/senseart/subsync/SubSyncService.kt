@@ -1,6 +1,7 @@
 package com.senseart.subsync
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ComponentName
 import android.content.SharedPreferences
 import android.graphics.PixelFormat
@@ -251,7 +252,25 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         }
     }
 
+    private var keyFiltering: Boolean? = null
+
+    /**
+     * Бутоните на дистанционното минават през приложението САМО когато е нужно:
+     * плейърът е отпред, панелът е отворен или се избира бутон. Във всички други
+     * приложения системата изобщо не ги праща тук – все едно приложението го няма.
+     */
+    private fun updateKeyFilter() {
+        val want = prefs.learning || page != Page.NONE || isPlayerForeground() || holdConsumed || holdFired
+        if (want == keyFiltering) return
+        val info = serviceInfo ?: return
+        info.flags = if (want) info.flags or AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
+        else info.flags and AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS.inv()
+        serviceInfo = info
+        keyFiltering = want
+    }
+
     private fun update() {
+        updateKeyFilter()
         val now = SystemClock.uptimeMillis()
         val s = sub
         val show = s != null && subsEnabled && (page != Page.NONE || isPlayerForeground())
@@ -307,7 +326,8 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     /** Пакетите на плейъра: ViMu и приложението, чиято позиция четем (MediaSession). */
     private fun isPlayerForeground(): Boolean {
         val session = (clock as? SessionClock)?.controller?.packageName
-        val fg = foregroundPkg ?: return session != null // още не знаем кое е отпред
+        // Още не знаем кое е отпред: приемаме, че е плейърът, само ако филмът върви.
+        val fg = foregroundPkg ?: return session != null && clock?.isPlaying() == true
         return fg == Prefs.VIMU_PACKAGE || fg == session
     }
 
@@ -360,6 +380,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
                 handler.removeCallbacks(holdRunnable)
                 if (holdFired) {
                     holdFired = false
+                    holdConsumed = false
                     return true
                 }
                 if (!holdConsumed) return false
@@ -381,7 +402,8 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         val action = Keys.replayAction(code) ?: return
         replayKey = if (Keys.isOk(code)) KeyEvent.KEYCODE_DPAD_CENTER else code
         replayUntil = SystemClock.uptimeMillis() + 800
-        performGlobalAction(action)
+        // Асинхронно: onKeyEvent трябва да върне веднага, иначе системата забавя бутоните.
+        handler.post { performGlobalAction(action) }
     }
 
     private fun learnKey(e: KeyEvent): Boolean {
