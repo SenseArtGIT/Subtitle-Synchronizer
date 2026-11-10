@@ -53,7 +53,9 @@ class SelfHealReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
             // Само след обновяване – ако потребителят сам я е изключил, не я пипаме.
-            Intent.ACTION_MY_PACKAGE_REPLACED -> SelfHeal.ensureAccessibility(context)
+            // В режим „само докато гледам филм“ не я включваме – ще се включи при следващия филм.
+            Intent.ACTION_MY_PACKAGE_REPLACED ->
+                if (!Prefs(context).autoA11y) SelfHeal.ensureAccessibility(context)
         }
     }
 }

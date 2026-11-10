@@ -85,9 +85,48 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             Log.i(TAG, "Няма „Достъп до известия“ – ще се ползва ръчен часовник")
         }
         addSubtitleWindow()
+        connectedAt = SystemClock.uptimeMillis()
+        // Кое приложение е отпред в момента на включване (събитията идват само при промяна).
+        try {
+            rootInActiveWindow?.packageName?.toString()?.let { pkg ->
+                if (pkg != packageName && pkg != "com.android.systemui") foregroundPkg = pkg
+            }
+        } catch (_: Exception) {
+        }
         refreshClock()
-        prefs.lastFile?.let { SubtitleLocator.fromPath(it, prefs.shares) }?.let { loadFile(it, quiet = true) }
+        val recent = System.currentTimeMillis() - prefs.currentVideoAt < 60_000
+        if (recent) {
+            // Филмът току-що е отворен през нас – търсим субтитрите му директно.
+            onVideoOpened()
+        } else {
+            prefs.lastFile?.let { SubtitleLocator.fromPath(it, prefs.shares) }?.let { loadFile(it, quiet = true) }
+        }
         handler.post(tick)
+    }
+
+    // ---------------------------------------------------------------- само докато гледам филм
+
+    private var connectedAt = 0L
+    private var notPlayerSince = 0L
+
+    /**
+     * В режим „само докато гледам филм“: щом ViMu не е на екрана няколко секунди,
+     * услугата се изключва сама, за да не пречи на началния екран.
+     */
+    private fun autoDisableCheck(now: Long) {
+        if (!prefs.autoA11y || prefs.learning || page != Page.NONE) {
+            notPlayerSince = 0; return
+        }
+        val justOpened = System.currentTimeMillis() - prefs.currentVideoAt < 30_000
+        if (isPlayerForeground() || justOpened || now - connectedAt < 10_000) {
+            notPlayerSince = 0; return
+        }
+        if (notPlayerSince == 0L) notPlayerSince = now
+        if (now - notPlayerSince > 4_000) {
+            Log.i(TAG, "ViMu не е на екрана – изключвам „Достъпност“")
+            shutdown()
+            disableSelf()
+        }
     }
 
     override fun onUnbind(intent: android.content.Intent?): Boolean {
@@ -285,6 +324,15 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             lastClockCheck = now
             if (clock === manualClock && !prefs.forceManualClock) refreshClock()
         }
+        if (foregroundPkg == null) {
+            try {
+                rootInActiveWindow?.packageName?.toString()?.let { pkg ->
+                    if (pkg != packageName && pkg != "com.android.systemui") foregroundPkg = pkg
+                }
+            } catch (_: Exception) {
+            }
+        }
+        autoDisableCheck(now)
     }
 
     private fun flash(msg: String) {

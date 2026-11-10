@@ -39,6 +39,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     private lateinit var okPauseBtn: Button
     private lateinit var manualBtn: Button
     private lateinit var holdBtn: Button
+    private lateinit var autoBtn: Button
     private lateinit var healStatus: TextView
     private lateinit var updateStatus: TextView
     private lateinit var updateBtn: Button
@@ -73,6 +74,14 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         section("1. Разрешения (еднократно)")
         a11yStatus = text("", 16f, Color.WHITE)
         button("Отвори „Достъпност“") { open(Settings.ACTION_ACCESSIBILITY_SETTINGS) }
+        autoBtn = button("") { prefs.autoA11y = !prefs.autoA11y }
+        text(
+            "„Само докато гледам филм“: докато има включена „Достъпност“, началният екран показва меню " +
+                "„Отваряне/Преместване“ вместо да стартира приложенията. Затова тя се включва сама, " +
+                "когато отворите филм през приложението, и се изключва сама няколко секунди след " +
+                "като излезете от ViMu.",
+            14f, 0xFFB0B8C0.toInt(),
+        )
         button("Включи „Достъпност“ без компютър") {
             when {
                 SelfHeal.isAccessibilityOn(this) ->
@@ -493,8 +502,15 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     private fun updateLabels() {
         refreshShares()
         val a11y = isAccessibilityOn()
-        a11yStatus.text = mark(a11y) + "Достъпност (показване над плейъра и бутоните)" +
-            if (a11y && !SubSyncService.running) " – включена, стартира се…" else ""
+        a11yStatus.text = if (prefs.autoA11y) {
+            mark(SelfHeal.canWriteSecure(this) || a11y) + "Достъпност – включва се сама при пускане на филм (сега: " +
+                (if (a11y) "включена" else "изключена") + ")"
+        } else {
+            mark(a11y) + "Достъпност (показване над плейъра и бутоните)" +
+                if (a11y && !SubSyncService.running) " – включена, стартира се…" else ""
+        }
+        autoBtn.text = "Режим на „Достъпност“: " +
+            if (prefs.autoA11y) "само докато гледам филм (препоръчително)" else "винаги включена"
         notifStatus.text = mark(isNotificationAccessOn()) +
             "Достъп до известия (позицията на филма от ViMu; без него – ръчен часовник)"
         filesStatus.text = mark(hasFilesAccess()) + "Достъп до всички файлове (четене и запис на .srt)"

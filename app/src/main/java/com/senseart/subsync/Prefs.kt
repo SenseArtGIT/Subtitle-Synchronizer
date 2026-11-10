@@ -101,6 +101,15 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(K_HOLD, true)
         set(v) = sp.edit().putBoolean(K_HOLD, v).apply()
 
+    /**
+     * „Достъпност“ само докато се гледа филм: включва се при отваряне на филм през приложението
+     * и се изключва сама, когато ViMu не е на екрана. Началният екран на Android TV показва меню
+     * „Отваряне/Преместване“ вместо да стартира приложенията, докато има включена услуга за достъпност.
+     */
+    var autoA11y: Boolean
+        get() = sp.getBoolean(K_AUTO_A11Y, true)
+        set(v) = sp.edit().putBoolean(K_AUTO_A11Y, v).apply()
+
     fun loadModel(path: String): SyncModel? {
         if (!sp.contains("off:$path")) return null
         val off = sp.getLong("off:$path", 0)
@@ -127,6 +136,7 @@ class Prefs(context: Context) {
         const val K_OK_PAUSES = "ok_pauses"
         const val K_SHARES = "smb_shares"
         const val K_HOLD = "hold_hotkey"
+        const val K_AUTO_A11Y = "auto_a11y"
         const val K_VIDEO_URI = "video_uri"
         const val K_VIDEO_NAME = "video_name"
         const val K_VIDEO_DATA = "video_data"
