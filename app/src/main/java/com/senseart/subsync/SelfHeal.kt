@@ -48,12 +48,12 @@ object SelfHeal {
     }
 }
 
-/** След обновяване на приложението и след рестарт на приставката. */
+/** След обновяване на приложението. */
 class SelfHealReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
-            Intent.ACTION_MY_PACKAGE_REPLACED, Intent.ACTION_BOOT_COMPLETED ->
-                SelfHeal.ensureAccessibility(context)
+            // Само след обновяване – ако потребителят сам я е изключил, не я пипаме.
+            Intent.ACTION_MY_PACKAGE_REPLACED -> SelfHeal.ensureAccessibility(context)
         }
     }
 }

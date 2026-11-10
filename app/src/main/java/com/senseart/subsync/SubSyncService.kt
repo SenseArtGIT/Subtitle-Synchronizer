@@ -8,7 +8,6 @@ import android.graphics.PixelFormat
 import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
-import android.media.session.PlaybackState
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -206,8 +205,8 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             } catch (e: SecurityException) {
                 null
             } ?: emptyList()
+            // Само ViMu – никога друго приложение (YouTube, началният екран с трейлъри и т.н.).
             val c = controllers.firstOrNull { it.packageName == Prefs.VIMU_PACKAGE }
-                ?: controllers.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING }
             if (c != null) {
                 if (old is SessionClock && old.controller.sessionToken == c.sessionToken && old.positionMs() != null) return
                 val sc = SessionClock(c, handler) { prefs.calibrationMs }
@@ -324,11 +323,13 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     }
 
     /** Пакетите на плейъра: ViMu и приложението, чиято позиция четем (MediaSession). */
+    /** Дали ViMu е на екрана. Само тогава приложението показва субтитри и слуша дистанционното. */
     private fun isPlayerForeground(): Boolean {
-        val session = (clock as? SessionClock)?.controller?.packageName
-        // Още не знаем кое е отпред: приемаме, че е плейърът, само ако филмът върви.
-        val fg = foregroundPkg ?: return session != null && clock?.isPlaying() == true
-        return fg == Prefs.VIMU_PACKAGE || fg == session
+        val fg = foregroundPkg
+        if (fg != null) return fg == Prefs.VIMU_PACKAGE
+        // Още не знаем кое е отпред (току-що стартирала услуга): само ако ViMu в момента пуска филм.
+        val sc = clock as? SessionClock ?: return false
+        return sc.controller.packageName == Prefs.VIMU_PACKAGE && sc.isPlaying()
     }
 
     private fun dispatchToPage(e: KeyEvent): Boolean {

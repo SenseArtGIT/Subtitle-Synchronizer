@@ -73,6 +73,18 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         section("1. Разрешения (еднократно)")
         a11yStatus = text("", 16f, Color.WHITE)
         button("Отвори „Достъпност“") { open(Settings.ACTION_ACCESSIBILITY_SETTINGS) }
+        button("Включи „Достъпност“ без компютър") {
+            when {
+                SelfHeal.isAccessibilityOn(this) ->
+                    Toast.makeText(this, "„Достъпност“ вече е включена", Toast.LENGTH_SHORT).show()
+                !SelfHeal.canWriteSecure(this) ->
+                    Toast.makeText(this, "Нужна е еднократната adb команда pm grant (вижте по-долу)", Toast.LENGTH_LONG).show()
+                SelfHeal.ensureAccessibility(this) ->
+                    Toast.makeText(this, "„Достъпност“ е включена", Toast.LENGTH_SHORT).show()
+                else -> Toast.makeText(this, "Не успях да я включа", Toast.LENGTH_LONG).show()
+            }
+            updateLabels()
+        }
         text(
             "Ако пише, че е забранено от съображения за сигурност: отворете информацията за " +
                 "приложението, изберете „Разреши ограничени настройки“ (в менюто ⋮ или най-долу) " +
@@ -171,9 +183,6 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     override fun onResume() {
         super.onResume()
         prefs.sp.registerOnSharedPreferenceChangeListener(this)
-        if (SelfHeal.ensureAccessibility(this)) {
-            Toast.makeText(this, "„Достъпност“ е включена отново автоматично", Toast.LENGTH_LONG).show()
-        }
         updateLabels()
         // Тиха проверка за нова версия (най-много веднъж на 6 часа).
         val last = prefs.sp.getLong("update_check", 0)
@@ -490,7 +499,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
             "Достъп до известия (позицията на филма от ViMu; без него – ръчен часовник)"
         filesStatus.text = mark(hasFilesAccess()) + "Достъп до всички файлове (четене и запис на .srt)"
         healStatus.text = mark(SelfHeal.canWriteSecure(this)) +
-            "Автоматично включване на „Достъпност“ след обновяване" +
+            "Включване на „Достъпност“ без компютър (и автоматично след обновяване)" +
             if (SelfHeal.canWriteSecure(this)) "" else " (еднократна adb команда – вижте по-долу)"
         updateUpdateLabels()
         hotkeyLabel.text = if (prefs.learning) "Натиснете сега бутона на дистанционното…"
