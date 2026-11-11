@@ -59,7 +59,9 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private val browser = FileBrowser()
     private var status = ""
     private var statusUntil = 0L
+    /** Бутон, чийто остатък (повторения и пускане) да не стигне до ViMu след затваряне на панела. */
     private var swallowUp = -1
+    private var swallowUntil = 0L
     private var lastPanelRender = 0L
     private var lastClockCheck = 0L
     private var browseToken = 0
@@ -169,8 +171,11 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         if (event.className?.toString()?.contains("Toast") == true) return
         if (pkg == imePackage()) return
         foregroundPkg = pkg
-        // Излизане от ViMu – изключваме веднага, без да чакаме следващия цикъл.
-        if (running) autoDisableCheck(SystemClock.uptimeMillis())
+        if (!running) return
+        // Излизане от ViMu: затваряме панела (каквото и да е било отворено в него)
+        // и изключваме „Достъпност“ веднага, без да чакаме следващия цикъл.
+        if (pkg != Prefs.VIMU_PACKAGE && page != Page.NONE) resetPanel()
+        autoDisableCheck(SystemClock.uptimeMillis())
     }
 
     override fun onSharedPreferenceChanged(sp: SharedPreferences?, key: String?) {
@@ -329,8 +334,8 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     override fun onKeyEvent(e: KeyEvent): Boolean {
         if (!::prefs.isInitialized) return false
         val code = e.keyCode
-        if (e.action == KeyEvent.ACTION_UP && code == swallowUp) {
-            swallowUp = -1
+        if (code == swallowUp && SystemClock.uptimeMillis() < swallowUntil) {
+            if (e.action == KeyEvent.ACTION_UP) swallowUp = -1
             return true
         }
         // Бутон, който сами „натиснахме“ (кратко натискане при режим „задържане“) – пропускаме го.
@@ -362,6 +367,13 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     }
 
     private fun dispatchToPage(e: KeyEvent): Boolean {
+        // Аварийно излизане: задържан BACK (~1 с) затваря панела от всяко място.
+        if (page != Page.NONE && e.keyCode == KeyEvent.KEYCODE_BACK &&
+            e.action == KeyEvent.ACTION_DOWN && e.repeatCount >= 15
+        ) {
+            closePanel(swallowKey = KeyEvent.KEYCODE_BACK)
+            return true
+        }
         return when (page) {
             Page.NONE -> {
                 false
@@ -479,8 +491,23 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         page = Page.NONE
         followCurrent = true
         markVideoMs = null
+        browseToken++ // недовършено зареждане на папка да не отвори панела наново
         panelView?.visibility = View.GONE
-        if (swallowKey >= 0) swallowUp = swallowKey
+        if (swallowKey >= 0) swallowRest(swallowKey)
+    }
+
+    private fun swallowRest(code: Int) {
+        swallowUp = code
+        swallowUntil = SystemClock.uptimeMillis() + 3000
+    }
+
+    /** Пълно нулиране на панела – при излизане от ViMu и при нов филм. */
+    private fun resetPanel() {
+        handler.removeCallbacks(holdRunnable)
+        holdConsumed = false
+        holdFired = false
+        status = ""
+        closePanel()
     }
 
     private fun stepFor(repeat: Int) = when {
@@ -617,7 +644,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
                     val item = menu[menuSel]
                     if (item.ok != null) {
                         item.ok.invoke()
-                        if (page == Page.NONE) swallowUp = e.keyCode
+                        if (page == Page.NONE) swallowRest(e.keyCode)
                     }
                 }
             }
@@ -778,6 +805,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
     /** Файловият мениджър току-що отвори филм през нас (OpenVideoActivity). */
     private fun onVideoOpened() {
+        resetPanel() // нов филм – панелът започва на чисто
         val uri = prefs.currentVideoUri ?: return
         val name = prefs.currentVideoName ?: SubtitleLocator.nameFromUri(uri)
         autoLocate(uri, prefs.currentVideoData, name, strict = true)
