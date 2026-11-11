@@ -119,6 +119,8 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             Log.i(TAG, "ViMu не е на екрана – изключвам „Достъпност“")
             shutdown()
             disableSelf()
+            // Ако системата се забави, махаме се от списъка и сами – да не остане „полуживо“ копие.
+            SelfHeal.disableAccessibility(this)
         }
     }
 
@@ -160,6 +162,18 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         }
         subtitleView = null
         panelView = null
+        // Забравяме всичко за филма и панела – ново включване започва на чисто.
+        sub = null
+        saveSnapshot = null
+        page = Page.NONE
+        followCurrent = true
+        markVideoMs = null
+        holdConsumed = false
+        holdFired = false
+        swallowUp = -1
+        foregroundPkg = null
+        lastAutoKey = null
+        autoCandidates = emptyList()
     }
 
     override fun onInterrupt() {}
@@ -332,7 +346,8 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     // ---------------------------------------------------------------- бутони
 
     override fun onKeyEvent(e: KeyEvent): Boolean {
-        if (!::prefs.isInitialized) return false
+        // Спряна услуга (чака системата да я изключи) никога не пипа бутоните.
+        if (!running || !::prefs.isInitialized) return false
         val code = e.keyCode
         if (code == swallowUp && SystemClock.uptimeMillis() < swallowUntil) {
             if (e.action == KeyEvent.ACTION_UP) swallowUp = -1

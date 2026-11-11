@@ -53,6 +53,20 @@ object SelfHeal {
         }
     }
 
+    /** Маха услугата от списъка с включени услуги за достъпност (ако имаме право). */
+    fun disableAccessibility(ctx: Context) {
+        if (!canWriteSecure(ctx) || !isAccessibilityOn(ctx)) return
+        try {
+            val cr = ctx.contentResolver
+            val rest = Settings.Secure.getString(cr, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+                ?.split(':')?.filter { it.isNotBlank() && !it.startsWith(ctx.packageName + "/") } ?: emptyList()
+            Settings.Secure.putString(cr, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, rest.joinToString(":"))
+            if (rest.isEmpty()) Settings.Secure.putInt(cr, Settings.Secure.ACCESSIBILITY_ENABLED, 0)
+        } catch (e: Exception) {
+            Log.w(TAG, "disableAccessibility", e)
+        }
+    }
+
     /** Включва услугата, ако е изключена и имаме право. Връща true, ако я е включила сега. */
     fun ensureAccessibility(ctx: Context): Boolean {
         if (isAccessibilityOn(ctx) || !canWriteSecure(ctx)) return false
