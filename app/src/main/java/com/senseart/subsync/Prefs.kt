@@ -159,6 +159,7 @@ class Prefs(context: Context) {
         const val K_HOLD = "hold_hotkey"
         const val K_AUTO_A11Y = "auto_a11y"
         const val K_SYNCS_CLEARED = "syncs_cleared"
+        const val K_DIAG = "last_locate"
 
         fun formatBytes(b: Long): String = when {
             b < 1024 -> "$b байта"

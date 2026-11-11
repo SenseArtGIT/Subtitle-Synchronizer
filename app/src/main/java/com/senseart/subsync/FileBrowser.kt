@@ -71,6 +71,7 @@ class FileBrowser {
             shares: List<SmbShare>,
             foldersOnly: Boolean = false,
             saveName: String = "",
+            filmDir: VFile? = null,
         ): List<Entry> {
             val list = ArrayList<Entry>()
             if (d == null && foldersOnly) {
@@ -80,7 +81,9 @@ class FileBrowser {
             }
             if (d == null) {
                 for (f in suggestions) list.add(Entry(f, "★ " + f.name + "   (" + shortParent(f) + ")", Kind.SUGGESTION))
-                if (recent != null) list.add(Entry(recent, "◷ Последна папка: " + recent.name, Kind.DIR))
+                // Папката на текущия филм; „последна папка“ (от предишния филм) – само ако тя не е известна.
+                if (filmDir != null) list.add(Entry(filmDir, "🎬 Папката на филма: " + filmDir.name, Kind.DIR))
+                else if (recent != null) list.add(Entry(recent, "◷ Последна папка: " + recent.name, Kind.DIR))
                 for (r in allRoots(shares)) list.add(Entry(r, rootLabel(r), Kind.DIR))
                 if (shares.isEmpty()) {
                     list.add(Entry(null, "(мрежови папки се добавят от приложението → „Мрежови папки“)", Kind.INFO))

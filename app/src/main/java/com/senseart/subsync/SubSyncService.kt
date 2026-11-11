@@ -68,6 +68,9 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
     /** Последният филм, за който сме търсили .srt, и намерените кандидати. */
     private var lastAutoKey: String? = null
+
+    /** Видео файлът на текущия филм (ако адресът му е разпознат). */
+    private var currentVideo: VFile? = null
     private var autoCandidates: List<VFile> = emptyList()
 
     // ---------------------------------------------------------------- жизнен цикъл
@@ -174,6 +177,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         foregroundPkg = null
         lastAutoKey = null
         autoCandidates = emptyList()
+        currentVideo = null
     }
 
     override fun onInterrupt() {}
@@ -696,7 +700,8 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private fun openFiles() {
         page = Page.FILES
         saveSnapshot = null
-        browse(null)
+        // Започваме направо в папката на текущия филм, ако е известна.
+        browse(currentVideo?.parent)
         // Допълнителни предложения по името на филма, който плейърът съобщава.
         val md = currentMetadata()
         val title = metadataTitle(md) ?: return
@@ -729,10 +734,12 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         val recent = recentDir(shares)
         io.execute {
             val snap = saveSnapshot
+            val film = currentVideo?.parent
             val list = try {
                 FileBrowser.build(
                     d, sugg, recent, shares,
                     foldersOnly = snap != null, saveName = snap?.sub?.file?.name ?: "",
+                    filmDir = film,
                 )
             } catch (e: Exception) {
                 listOf(FileBrowser.Entry(null, "Грешка: ${e.message}", FileBrowser.Kind.INFO))
@@ -796,6 +803,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         shares: List<SmbShare>, recent: VFile?,
     ): List<VFile> = try {
         val video = SubtitleLocator.resolveVideo(uri, dataPath, shares)
+        if (video != null) handler.post { currentVideo = video }
         var found = if (video != null) SubtitleLocator.siblings(video) else emptyList()
         // Мрежова папка, разпозната от адреса (напр. от ES File Explorer), която още не е добавена:
         // ако връзката работи, я запомняме, за да се вижда и в панела.
@@ -812,6 +820,12 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         if (found.isEmpty()) {
             found = SubtitleLocator.searchByName(videoName, FileBrowser.allRoots(shares))
         }
+        // За екрана с настройки: какво сме получили и какво сме намерили.
+        prefs.sp.edit().putString(
+            Prefs.K_DIAG,
+            "Адрес: ${uri ?: "—"}\nРазпознат като: ${video?.path ?: "не е разпознат"}\n" +
+                "Субтитри: ${found.firstOrNull()?.path ?: "не са намерени"}",
+        ).apply()
         found
     } catch (e: Exception) {
         Log.w(TAG, "findFor", e)
@@ -822,6 +836,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private fun onVideoOpened() {
         resetPanel() // нов филм – панелът започва на чисто
         val uri = prefs.currentVideoUri ?: return
+        currentVideo = SubtitleLocator.resolveVideo(uri, prefs.currentVideoData, prefs.shares)
         val name = prefs.currentVideoName ?: SubtitleLocator.nameFromUri(uri)
         autoLocate(uri, prefs.currentVideoData, name, strict = true)
     }

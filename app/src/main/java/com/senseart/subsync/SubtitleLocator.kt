@@ -157,24 +157,36 @@ object SubtitleLocator {
         val all = dir.list() ?: return emptyList()
         val found = all.filter { !it.isDirectory && isSubtitle(it.name) && matches(it.name, video.name) }
             .toMutableList()
+        // Всеки филм е в своя папка: ако там има точно един .srt, той е правилният, каквото и да е името му.
+        if (found.isEmpty()) {
+            val srts = all.filter { !it.isDirectory && isSubtitle(it.name) }
+            if (srts.size == 1) found.add(srts[0])
+            else if (srts.size > 1) preferBulgarian(srts)?.let { found.add(it) }
+        }
         if (found.isEmpty()) {
             for (d in all) {
                 if (d.isDirectory && d.name.lowercase(Locale.ROOT) in SUB_DIRS) {
                     d.list()?.filter { !it.isDirectory && isSubtitle(it.name) }?.let { subs ->
                         val m = subs.filter { matches(it.name, video.name) }
-                        // В папка Subs често името е различно – ако има само един .srt, взимаме него.
-                        found.addAll(if (m.isNotEmpty()) m else if (subs.size == 1) subs else emptyList())
+                        when {
+                            m.isNotEmpty() -> found.addAll(m)
+                            subs.size == 1 -> found.addAll(subs)
+                            subs.size > 1 -> preferBulgarian(subs)?.let { found.add(it) }
+                        }
                     }
                 }
             }
         }
-        // Ако в папката има само един филм и само един .srt, той е почти сигурно правилният.
-        if (found.isEmpty()) {
-            val videos = all.count { !it.isDirectory && isVideo(it.name) }
-            val srts = all.filter { !it.isDirectory && isSubtitle(it.name) }
-            if (videos == 1 && srts.size == 1) found.add(srts[0])
-        }
         return found.sortedWith(compareBy({ rank(it.name, video.name) }, { it.name.length }))
+    }
+
+    /** От няколко .srt без съвпадащо име – българския (bg/bul/bulgarian в името), ако има точно един. */
+    fun preferBulgarian(srts: List<VFile>): VFile? {
+        val bg = srts.filter {
+            val n = it.name.lowercase(Locale.ROOT)
+            Regex("""(^|[^a-z])(bg|bul|bulgarian|бг)([^a-z]|$)""").containsMatchIn(n)
+        }
+        return bg.singleOrNull()
     }
 
     fun isVideo(name: String): Boolean {

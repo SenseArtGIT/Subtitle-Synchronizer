@@ -109,4 +109,32 @@ class LocatorTest {
             root.deleteRecursively()
         }
     }
+
+    @Test
+    fun singleSrtOrBulgarianIsPicked() {
+        val root = createTempDir()
+        try {
+            val a = File(root, "A").apply { mkdirs() }
+            File(a, "Film.2020.1080p.mkv").writeText("")
+            File(a, "sample.mkv").writeText("")
+            File(a, "Bulgarian subs.srt").writeText("")
+            assertEquals(listOf("Bulgarian subs.srt"),
+                SubtitleLocator.siblings(LocalFile(File(a, "Film.2020.1080p.mkv"))).map { it.name })
+
+            val b = File(root, "B").apply { mkdirs() }
+            File(b, "movie.mkv").writeText("")
+            File(b, "English.srt").writeText("")
+            File(b, "Movie BG.srt").writeText("")
+            assertEquals(listOf("Movie BG.srt"),
+                SubtitleLocator.siblings(LocalFile(File(b, "movie.mkv"))).map { it.name })
+
+            val c = File(root, "C").apply { mkdirs() }
+            File(c, "x.mkv").writeText("")
+            File(c, "one.srt").writeText("")
+            File(c, "two.srt").writeText("")
+            assertTrue(SubtitleLocator.siblings(LocalFile(File(c, "x.mkv"))).isEmpty())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
 }

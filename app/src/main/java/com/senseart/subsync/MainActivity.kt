@@ -39,6 +39,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     private lateinit var holdBtn: Button
     private lateinit var autoBtn: Button
     private lateinit var clearSyncsBtn: Button
+    private lateinit var diagText: TextView
     private lateinit var healStatus: TextView
     private lateinit var updateStatus: TextView
     private lateinit var updateBtn: Button
@@ -153,6 +154,8 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
                 "и веднага го предава на ViMu – няма да го виждате на екрана.",
             15f, 0xFFD0D6DC.toInt(),
         )
+        text("Последно отворен филм:", 14f, 0xFFB0B8C0.toInt())
+        diagText = text("", 13f, 0xFF9FD3FF.toInt(), mono = true)
 
         section("5. Вид на субтитрите")
         sizeLabel = text("", 16f, Color.WHITE)
@@ -526,6 +529,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     }
 
     private fun updateLabels() {
+        diagText.text = prefs.sp.getString(Prefs.K_DIAG, null) ?: "(още няма)"
         val (syncCount, syncBytes) = prefs.syncStats()
         clearSyncsBtn.text = "Изчисти запомнените синхронизации за всички филми до момента (" +
             (if (syncCount == 0) "няма запомнени" else "${Prefs.filmsWord(syncCount)}, ${Prefs.formatBytes(syncBytes)}") + ")"
