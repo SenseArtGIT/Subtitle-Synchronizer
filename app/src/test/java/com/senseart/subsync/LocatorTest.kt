@@ -102,7 +102,7 @@ class LocatorTest {
             File(g, "subs.srt").writeText("")
             assertTrue(SubtitleLocator.siblings(LocalFile(File(g, "movie.mkv"))).isEmpty())
 
-            // Следващата серия по името, което съобщава плейърът (без или с разширение).
+            // Име без разширение също се сравнява правилно.
             assertEquals(listOf("3.srt"), SubtitleLocator.siblings(LocalFile(d).child("3")).map { it.name })
             assertEquals(listOf("3.srt"), SubtitleLocator.siblings(LocalFile(d).child("3.avi")).map { it.name })
         } finally {

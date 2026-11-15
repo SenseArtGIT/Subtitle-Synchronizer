@@ -71,9 +71,6 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
     /** Видео файлът на текущия филм (ако адресът му е разпознат). */
     private var currentVideo: VFile? = null
-
-    /** Последното име на филм, съобщено от ViMu – за да разберем кога премине на следващия файл. */
-    private var lastMetaTitle: String? = null
     private var autoCandidates: List<VFile> = emptyList()
 
     // ---------------------------------------------------------------- жизнен цикъл
@@ -103,9 +100,8 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         if (recent) {
             // Филмът току-що е отворен през нас – търсим субтитрите му директно.
             onVideoOpened()
-        } else {
-            prefs.lastFile?.let { SubtitleLocator.fromPath(it, prefs.shares) }?.let { loadFile(it, quiet = true) }
         }
+        // Иначе не зареждаме нищо от предишен филм – субтитрите идват само от папката на пуснатия филм.
         handler.post(tick)
     }
 
@@ -181,7 +177,6 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         lastAutoKey = null
         autoCandidates = emptyList()
         currentVideo = null
-        lastMetaTitle = null
     }
 
     override fun onInterrupt() {}
@@ -280,8 +275,6 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         if (c != null) {
             val sc = SessionClock(c, handler) { prefs.calibrationMs }
             clock = sc
-            sc.onMetadata = { onPlayerMetadata(it) }
-            onPlayerMetadata(sc.metadata)
         }
     }
 
@@ -780,11 +773,10 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
      */
     private fun findFor(
         uri: String?, dataPath: String?, videoName: String,
-        shares: List<SmbShare>, folderHint: VFile?,
+        shares: List<SmbShare>,
     ): List<VFile> = try {
-        // Къде е видеото: от адреса му, а ако не се разпознава – в папката на предишната серия.
+        // Къде е видеото – само от адреса, с който е отворен. Никъде другаде не търсим.
         val video = SubtitleLocator.resolveVideo(uri, dataPath, shares)
-            ?: folderHint?.child(videoName)
         if (video != null) handler.post { currentVideo = video }
         // Стандартно правило: само .srt със същото име до видеото. Без търсене другаде.
         val found = if (video != null) SubtitleLocator.siblings(video) else emptyList()
@@ -812,32 +804,12 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     /** Файловият мениджър току-що отвори филм през нас (OpenVideoActivity). */
     private fun onVideoOpened() {
         resetPanel() // нов филм – панелът започва на чисто
-        lastMetaTitle = null
         val uri = prefs.currentVideoUri ?: return
         currentVideo = SubtitleLocator.resolveVideo(uri, prefs.currentVideoData, prefs.shares)
         val name = prefs.currentVideoName ?: SubtitleLocator.nameFromUri(uri)
         autoLocate(uri, prefs.currentVideoData, name, strict = true)
     }
 
-    /** Плейърът смени филма (напр. пуснат е от собствения му браузър). */
-    private fun onPlayerMetadata(md: MediaMetadata?) {
-        val title = metadataTitle(md) ?: return
-        val prev = lastMetaTitle
-        lastMetaTitle = title
-        if (prev == title) return
-        val uri = md?.getString(MediaMetadata.METADATA_KEY_MEDIA_URI)
-            ?: md?.getString(MediaMetadata.METADATA_KEY_MEDIA_ID)
-        if (prev == null) {
-            // Първото име, което ViMu съобщава за този филм. Ако филмът е отворен през нас,
-            // вече знаем точния файл; иначе пробваме само ако ViMu дава пълния път.
-            if (currentVideo == null && uri != null) autoLocate(uri, null, title, strict = false)
-            return
-        }
-        // ViMu премина на друг файл (напр. следващата серия): търсим неговия .srt в същата папка;
-        // ако няма – махаме субтитрите на предишния.
-        resetPanel()
-        autoLocate(uri, null, title, strict = true)
-    }
 
     /**
      * [strict] = знаем със сигурност, че е пуснат нов филм: ако няма .srt за него,
@@ -850,9 +822,8 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         lastAutoKey = key
         autoCandidates = emptyList()
         val shares = prefs.shares
-        val folder = currentVideo?.parent
         Thread {
-            val found = findFor(uri, dataPath, videoName, shares, folder)
+            val found = findFor(uri, dataPath, videoName, shares)
             handler.post {
                 if (lastAutoKey != key) return@post
                 autoCandidates = found
