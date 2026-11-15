@@ -10,8 +10,6 @@ import java.util.Locale
  */
 object SubtitleLocator {
 
-    private val SUB_DIRS = setOf("subs", "sub", "subtitles", "subtitle", "субтитри")
-
     fun isSubtitle(name: String) = name.lowercase(Locale.ROOT).endsWith(".srt")
 
     /** Опростява име за сравнение: малки букви, без разширение, само букви и цифри. */
@@ -29,18 +27,6 @@ object SubtitleLocator {
         val b = normalize(videoName)
         if (a.length < 4 || b.length < 4) return false
         return a == b || a.startsWith(b) || b.startsWith(a)
-    }
-
-    /** По-малко = по-добре: точно същото име, после .bg/.bul, после останалите. */
-    fun rank(srtName: String, videoName: String): Int {
-        val a = normalize(srtName)
-        val b = normalize(videoName)
-        return when {
-            a == b -> 0
-            a == b + "bg" || a == b + "bul" || a == b + "bulgarian" -> 1
-            a.startsWith(b) -> 2
-            else -> 3
-        }
     }
 
     /** Декодира %XX като UTF-8 (без да превръща „+“ в интервал). */
@@ -151,67 +137,31 @@ object SubtitleLocator {
     fun nameFromUri(uri: String): String =
         percentDecode(uri.substringBefore('?').substringBefore('#')).trimEnd('/').substringAfterLast('/')
 
-    /** .srt файлове до видеото и в подпапка Subs/Subtitles до него. */
+    /**
+     * Името без разширението: "2.avi" → "2", "Film.2020.mkv" → "Film.2020".
+     * Разширението се маха само ако е на видео или субтитри.
+     */
+    fun baseName(name: String): String {
+        val n = name.substringAfterLast('/')
+        val dot = n.lastIndexOf('.')
+        if (dot <= 0) return n
+        val ext = n.substring(dot + 1).lowercase(Locale.ROOT)
+        return if (ext == "srt" || isVideo(n)) n.substring(0, dot) else n
+    }
+
+    /** Стандартното правило на плейърите: .srt със съвсем същото име като видеото ("2.avi" → "2.srt"). */
+    fun sameName(srtName: String, videoName: String): Boolean =
+        isSubtitle(srtName) && baseName(srtName).equals(baseName(videoName), ignoreCase = true)
+
+    /** .srt до видеото със същото име. Ако няма такъв – празно (без догадки). */
     fun siblings(video: VFile): List<VFile> {
         val dir = video.parent ?: return emptyList()
         val all = dir.list() ?: return emptyList()
-        val found = all.filter { !it.isDirectory && isSubtitle(it.name) && matches(it.name, video.name) }
-            .toMutableList()
-        // Всеки филм е в своя папка: ако там има точно един .srt, той е правилният, каквото и да е името му.
-        if (found.isEmpty()) {
-            val srts = all.filter { !it.isDirectory && isSubtitle(it.name) }
-            if (srts.size == 1) found.add(srts[0])
-            else if (srts.size > 1) preferBulgarian(srts)?.let { found.add(it) }
-        }
-        if (found.isEmpty()) {
-            for (d in all) {
-                if (d.isDirectory && d.name.lowercase(Locale.ROOT) in SUB_DIRS) {
-                    d.list()?.filter { !it.isDirectory && isSubtitle(it.name) }?.let { subs ->
-                        val m = subs.filter { matches(it.name, video.name) }
-                        when {
-                            m.isNotEmpty() -> found.addAll(m)
-                            subs.size == 1 -> found.addAll(subs)
-                            subs.size > 1 -> preferBulgarian(subs)?.let { found.add(it) }
-                        }
-                    }
-                }
-            }
-        }
-        return found.sortedWith(compareBy({ rank(it.name, video.name) }, { it.name.length }))
-    }
-
-    /** От няколко .srt без съвпадащо име – българския (bg/bul/bulgarian в името), ако има точно един. */
-    fun preferBulgarian(srts: List<VFile>): VFile? {
-        val bg = srts.filter {
-            val n = it.name.lowercase(Locale.ROOT)
-            Regex("""(^|[^a-z])(bg|bul|bulgarian|бг)([^a-z]|$)""").containsMatchIn(n)
-        }
-        return bg.singleOrNull()
+        return all.filter { !it.isDirectory && sameName(it.name, video.name) }
     }
 
     fun isVideo(name: String): Boolean {
         val ext = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
         return ext in setOf("mkv", "mp4", "avi", "ts", "m2ts", "mts", "mov", "wmv", "m4v", "mpg", "mpeg", "vob", "webm", "iso")
-    }
-
-    /**
-     * Търси по име в дадените места (папки). [budget] ограничава броя прегледани папки,
-     * за да не се бави с часове при огромни дискове.
-     */
-    fun searchByName(videoName: String, roots: List<VFile>, budget: Int = 2000, maxDepth: Int = 5): List<VFile> {
-        val found = LinkedHashSet<VFile>()
-        var left = budget
-        fun walk(d: VFile, depth: Int) {
-            if (left-- <= 0 || depth > maxDepth || found.size >= 10) return
-            val ch = d.list() ?: return
-            for (f in ch) if (!f.isDirectory && isSubtitle(f.name) && matches(f.name, videoName)) found.add(f)
-            for (f in ch) {
-                if (f.isDirectory && !f.name.startsWith(".") && !f.name.startsWith("$") &&
-                    f.name != "Android" && f.name != "LOST.DIR" && f.name != "System Volume Information"
-                ) walk(f, depth + 1)
-            }
-        }
-        for (r in roots) walk(r, 0)
-        return found.sortedWith(compareBy({ rank(it.name, videoName) }, { it.name.length }))
     }
 }

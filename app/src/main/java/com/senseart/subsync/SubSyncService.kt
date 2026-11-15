@@ -71,6 +71,9 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
     /** Видео файлът на текущия филм (ако адресът му е разпознат). */
     private var currentVideo: VFile? = null
+
+    /** Последното име на филм, съобщено от ViMu – за да разберем кога премине на следващия файл. */
+    private var lastMetaTitle: String? = null
     private var autoCandidates: List<VFile> = emptyList()
 
     // ---------------------------------------------------------------- жизнен цикъл
@@ -178,6 +181,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         lastAutoKey = null
         autoCandidates = emptyList()
         currentVideo = null
+        lastMetaTitle = null
     }
 
     override fun onInterrupt() {}
@@ -485,7 +489,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             Page.NONE -> {
                 refreshClock()
                 ensurePanel().visibility = View.VISIBLE
-                if (sub == null || currentFileLooksWrong()) openFiles() else openSync()
+                if (sub == null) openFiles() else openSync()
             }
 
             Page.SYNC -> {
@@ -690,35 +694,11 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         }
     }
 
-    /** Ако плейърът съобщава име на филм, различно от заредения .srt, предлагаме нов файл. */
-    private fun currentFileLooksWrong(): Boolean {
-        val f = sub?.file ?: return true
-        val title = metadataTitle(currentMetadata()) ?: return false
-        return SubtitleLocator.normalize(title).length >= 4 && !SubtitleLocator.matches(f.name, title)
-    }
-
     private fun openFiles() {
         page = Page.FILES
         saveSnapshot = null
         // Започваме направо в папката на текущия филм, ако е известна.
         browse(currentVideo?.parent)
-        // Допълнителни предложения по името на филма, който плейърът съобщава.
-        val md = currentMetadata()
-        val title = metadataTitle(md) ?: return
-        val uri = md?.getString(MediaMetadata.METADATA_KEY_MEDIA_URI)
-            ?: md?.getString(MediaMetadata.METADATA_KEY_MEDIA_ID)
-        if (autoCandidates.isNotEmpty() && SubtitleLocator.normalize(title) == lastAutoKey) return
-        val shares = prefs.shares
-        val recent = recentDir(shares)
-        Thread {
-            val found = findFor(uri, null, title, shares, recent)
-            handler.post {
-                if (found.isNotEmpty() && page == Page.FILES && browser.dir == null) {
-                    autoCandidates = found
-                    browse(null)
-                }
-            }
-        }.start()
     }
 
     private fun recentDir(shares: List<SmbShare>): VFile? =
@@ -800,11 +780,14 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
      */
     private fun findFor(
         uri: String?, dataPath: String?, videoName: String,
-        shares: List<SmbShare>, recent: VFile?,
+        shares: List<SmbShare>, folderHint: VFile?,
     ): List<VFile> = try {
+        // Къде е видеото: от адреса му, а ако не се разпознава – в папката на предишната серия.
         val video = SubtitleLocator.resolveVideo(uri, dataPath, shares)
+            ?: folderHint?.child(videoName)
         if (video != null) handler.post { currentVideo = video }
-        var found = if (video != null) SubtitleLocator.siblings(video) else emptyList()
+        // Стандартно правило: само .srt със същото име до видеото. Без търсене другаде.
+        val found = if (video != null) SubtitleLocator.siblings(video) else emptyList()
         // Мрежова папка, разпозната от адреса (напр. от ES File Explorer), която още не е добавена:
         // ако връзката работи, я запомняме, за да се вижда и в панела.
         if (video is SmbFile && shares.none { it.id == video.share.id && it.user == video.share.user }) {
@@ -814,17 +797,11 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
                 if (now.none { it.id == video.share.id }) prefs.shares = now + video.share
             }
         }
-        if (found.isEmpty()) {
-            found = SubtitleLocator.searchByName(videoName, listOfNotNull(recent?.parent, recent))
-        }
-        if (found.isEmpty()) {
-            found = SubtitleLocator.searchByName(videoName, FileBrowser.allRoots(shares))
-        }
         // За екрана с настройки: какво сме получили и какво сме намерили.
         prefs.sp.edit().putString(
             Prefs.K_DIAG,
             "Адрес: ${uri ?: "—"}\nРазпознат като: ${video?.path ?: "не е разпознат"}\n" +
-                "Субтитри: ${found.firstOrNull()?.path ?: "не са намерени"}",
+                "Субтитри: ${found.firstOrNull()?.path ?: "няма .srt със същото име"}",
         ).apply()
         found
     } catch (e: Exception) {
@@ -835,6 +812,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     /** Файловият мениджър току-що отвори филм през нас (OpenVideoActivity). */
     private fun onVideoOpened() {
         resetPanel() // нов филм – панелът започва на чисто
+        lastMetaTitle = null
         val uri = prefs.currentVideoUri ?: return
         currentVideo = SubtitleLocator.resolveVideo(uri, prefs.currentVideoData, prefs.shares)
         val name = prefs.currentVideoName ?: SubtitleLocator.nameFromUri(uri)
@@ -844,11 +822,21 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     /** Плейърът смени филма (напр. пуснат е от собствения му браузър). */
     private fun onPlayerMetadata(md: MediaMetadata?) {
         val title = metadataTitle(md) ?: return
-        // Ако филмът е отворен през нас преди малко, вече знаем точния файл.
-        if (System.currentTimeMillis() - prefs.currentVideoAt < 30_000) return
+        val prev = lastMetaTitle
+        lastMetaTitle = title
+        if (prev == title) return
         val uri = md?.getString(MediaMetadata.METADATA_KEY_MEDIA_URI)
             ?: md?.getString(MediaMetadata.METADATA_KEY_MEDIA_ID)
-        autoLocate(uri, null, title, strict = false)
+        if (prev == null) {
+            // Първото име, което ViMu съобщава за този филм. Ако филмът е отворен през нас,
+            // вече знаем точния файл; иначе пробваме само ако ViMu дава пълния път.
+            if (currentVideo == null && uri != null) autoLocate(uri, null, title, strict = false)
+            return
+        }
+        // ViMu премина на друг файл (напр. следващата серия): търсим неговия .srt в същата папка;
+        // ако няма – махаме субтитрите на предишния.
+        resetPanel()
+        autoLocate(uri, null, title, strict = true)
     }
 
     /**
@@ -856,15 +844,15 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
      * махаме старите субтитри, за да не се показват чужди.
      */
     private fun autoLocate(uri: String?, dataPath: String?, videoName: String, strict: Boolean) {
-        val key = SubtitleLocator.normalize(videoName)
-        if (key.length < 3) return
+        val key = videoName.trim().lowercase()
+        if (key.isEmpty()) return
         if (key == lastAutoKey && sub != null) return
         lastAutoKey = key
         autoCandidates = emptyList()
         val shares = prefs.shares
-        val recent = recentDir(shares)
+        val folder = currentVideo?.parent
         Thread {
-            val found = findFor(uri, dataPath, videoName, shares, recent)
+            val found = findFor(uri, dataPath, videoName, shares, folder)
             handler.post {
                 if (lastAutoKey != key) return@post
                 autoCandidates = found
@@ -874,7 +862,7 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
                     best != null -> loadFile(best, quiet = true, announce = true)
                     strict -> {
                         sub = null
-                        flash("Не намерих .srt за „$videoName“. Задръжте [${Keys.name(prefs.hotkey)}], за да изберете файл.")
+                        flash("Няма „${SubtitleLocator.baseName(videoName)}.srt“ до филма – без субтитри. Задръжте [${Keys.name(prefs.hotkey)}], ако искате да изберете файл.")
                     }
                 }
             }

@@ -39,8 +39,6 @@ class SmbIntegrationTest {
         val subs = SubtitleLocator.siblings(video)
         assertEquals("Test.Film.2021.srt", subs.first().name)
 
-        // Търсене по име из цялата папка
-        assertEquals("Test.Film.2021.srt", SubtitleLocator.searchByName("Test.Film.2021.mkv", listOf(sh.root)).first().name)
 
         // Четене (windows-1251) и запис с резервно копие
         val sub = Srt.load(subs.first())
