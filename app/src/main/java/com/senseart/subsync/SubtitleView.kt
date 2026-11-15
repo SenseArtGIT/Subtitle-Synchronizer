@@ -59,22 +59,11 @@ class SubtitleView(context: Context) : FrameLayout(context) {
     }
 
     companion object {
-        private val ASS_TAGS = Regex("""\{\\[^}]*\}""")
-        private val KNOWN_TAG = Regex("""</?(i|b|u|font)(\s[^>]*)?>""", RegexOption.IGNORE_CASE)
-
-        fun toSpanned(raw: String): Spanned {
-            val clean = ASS_TAGS.replace(raw, "")
-            // Екранираме всичко, освен познатите тагове <i> <b> <u> <font>.
-            val sb = StringBuilder()
-            var last = 0
-            for (m in KNOWN_TAG.findAll(clean)) {
-                sb.append(Html.escapeHtml(clean.substring(last, m.range.first)))
-                sb.append(m.value)
-                last = m.range.last + 1
-            }
-            sb.append(Html.escapeHtml(clean.substring(last)))
-            val html = sb.toString().replace("\n", "<br>")
-            return Html.fromHtml(html, Html.FROM_HTML_MODE_LEGACY)
-        }
+        /**
+         * Всеки ред от .srt остава отделен ред. (Преди Html.escapeHtml превръщаше прехода на
+         * нов ред в „&#10;“ и редовете се сливаха, а думите в края им се слепваха.)
+         */
+        fun toSpanned(raw: String): Spanned =
+            Html.fromHtml(SubtitleHtml.build(raw), Html.FROM_HTML_MODE_LEGACY)
     }
 }

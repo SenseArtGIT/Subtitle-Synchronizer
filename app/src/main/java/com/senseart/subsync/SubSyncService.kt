@@ -198,8 +198,9 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     override fun onSharedPreferenceChanged(sp: SharedPreferences?, key: String?) {
         when (key) {
             Prefs.K_TEXT_SIZE -> subtitleView?.setTextSizeSp(prefs.textSizeSp)
-            Prefs.K_BOTTOM -> subtitleParams?.let {
+            Prefs.K_BOTTOM, Prefs.K_SUB_WIDTH -> subtitleParams?.let {
                 it.y = dp(prefs.bottomMarginDp)
+                it.width = subtitleWidthPx()
                 try {
                     wm.updateViewLayout(subtitleView, it)
                 } catch (_: Exception) {
@@ -230,13 +231,14 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private fun addSubtitleWindow() {
         val v = SubtitleView(this)
         v.setTextSizeSp(prefs.textSizeSp)
-        val w = (resources.displayMetrics.widthPixels * 0.9).toInt()
-        val p = overlayParams(w, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+        val p = overlayParams(subtitleWidthPx(), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
         p.y = dp(prefs.bottomMarginDp)
         wm.addView(v, p)
         subtitleView = v
         subtitleParams = p
     }
+
+    private fun subtitleWidthPx() = resources.displayMetrics.widthPixels * prefs.subtitleWidthPct / 100
 
     private fun ensurePanel(): PanelView {
         panelView?.let { return it }
@@ -638,6 +640,9 @@ class SubSyncService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             MenuItem({ "Субтитри: " + if (subsEnabled) "показани" else "скрити" }, ok = { subsEnabled = !subsEnabled }),
             MenuItem({ "Размер на текста: ${prefs.textSizeSp}      ◀ ▶" }, adjust = { d -> prefs.textSizeSp += 2 * d }),
             MenuItem({ "Височина от долу: ${prefs.bottomMarginDp}      ◀ ▶" }, adjust = { d -> prefs.bottomMarginDp += 8 * d }),
+            MenuItem({ "Ширина на субтитрите: ${prefs.subtitleWidthPct}% от екрана      ◀ ▶" }, adjust = { d ->
+                prefs.subtitleWidthPct += 5 * d
+            }),
             MenuItem({ "Пауза / пусни филма" }, ok = { (clock as? SessionClock)?.togglePlay() }),
             MenuItem({ "Корекция на позицията от плейъра: ${prefs.calibrationMs} ms      ◀ ▶" }, adjust = { d ->
                 prefs.calibrationMs += 50L * d

@@ -42,7 +42,9 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
     private lateinit var diagText: TextView
     private lateinit var healStatus: TextView
     private lateinit var updateStatus: TextView
-    private lateinit var updateBtn: Button
+    private lateinit var checkBtn: Button
+    private lateinit var installBtn: Button
+    private lateinit var widthLabel: TextView
     private var latest: Updater.Release? = null
     private var updating = false
     private lateinit var sharesBox: LinearLayout
@@ -162,6 +164,8 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         row(button("Размер −") { prefs.textSizeSp -= 2 }, button("Размер +") { prefs.textSizeSp += 2 })
         marginLabel = text("", 16f, Color.WHITE)
         row(button("По-ниско") { prefs.bottomMarginDp -= 8 }, button("По-високо") { prefs.bottomMarginDp += 8 })
+        widthLabel = text("", 16f, Color.WHITE)
+        row(button("По-тясно") { prefs.subtitleWidthPct -= 5 }, button("По-широко") { prefs.subtitleWidthPct += 5 })
 
         section("6. Допълнителни")
         defOffsetLabel = text("", 16f, Color.WHITE)
@@ -184,7 +188,8 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
 
         section("Обновяване")
         updateStatus = text("", 16f, Color.WHITE)
-        updateBtn = button("Провери за нова версия") { onUpdateClick() }
+        checkBtn = button("Провери за нова версия") { checkUpdate() }
+        installBtn = button("Обнови") { onInstallClick() }
         text(
             "Обновявайте оттук, а не с APK през файловия мениджър – така Android не изключва " +
                 "„Достъпност“. Първия път Android ще поиска разрешение приложението да инсталира " +
@@ -201,29 +206,31 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         super.onResume()
         prefs.sp.registerOnSharedPreferenceChangeListener(this)
         updateLabels()
-        // Тиха проверка за нова версия (най-много веднъж на 6 часа).
-        val last = prefs.sp.getLong("update_check", 0)
-        if (latest == null && System.currentTimeMillis() - last > 6 * 3600_000L) checkUpdate(silent = true)
+        // Обновяването е само ръчно: „Провери за нова версия“, после „Обнови“.
     }
 
     // ---------------------------------------------------------------- обновяване
 
     private fun currentVersion(): String = packageManager.getPackageInfo(packageName, 0).versionName ?: "0"
 
-    private fun checkUpdate(silent: Boolean) {
-        if (!silent) updateStatus.text = "Проверка…"
+    private var checking = false
+
+    private fun checkUpdate() {
+        if (checking || updating) return
+        checking = true
+        updateStatus.text = "Проверка…"
         Thread {
             val res = runCatching { Updater.fetchLatest() }
             runOnUiThread {
-                prefs.sp.edit().putLong("update_check", System.currentTimeMillis()).apply()
+                checking = false
                 res.onSuccess { rel ->
                     latest = rel
                     updateUpdateLabels()
-                    if (!silent && (rel == null || !Updater.isNewer(rel.version, currentVersion()))) {
+                    if (rel == null || !Updater.isNewer(rel.version, currentVersion())) {
                         Toast.makeText(this, "Имате последната версия", Toast.LENGTH_SHORT).show()
                     }
                 }.onFailure {
-                    if (!silent) updateStatus.text = "Неуспешна проверка: ${it.message}"
+                    updateStatus.text = "Няма връзка с интернет или с GitHub – опитайте по-късно."
                 }
             }
         }.start()
@@ -235,22 +242,20 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
         val cur = currentVersion()
         if (rel != null && Updater.isNewer(rel.version, cur)) {
             updateStatus.text = "🔔 Налична е нова версия ${rel.version} (сега: $cur)"
-            updateBtn.text = "Изтегли и инсталирай ${rel.version}"
+            installBtn.text = "Обнови до ${rel.version}"
+            installBtn.visibility = View.VISIBLE
         } else {
             updateStatus.text = "Версия $cur" + if (rel != null) " – последна" else ""
-            updateBtn.text = "Провери за нова версия"
+            installBtn.visibility = View.GONE
         }
     }
 
-    private fun onUpdateClick() {
-        val rel = latest
-        if (updating) return
-        if (rel == null || !Updater.isNewer(rel.version, currentVersion())) {
-            checkUpdate(silent = false); return
-        }
+    private fun onInstallClick() {
+        val rel = latest ?: return
+        if (updating || !Updater.isNewer(rel.version, currentVersion())) return
         if (!packageManager.canRequestPackageInstalls()) {
             Toast.makeText(
-                this, "Разрешете на Subtitle Synchronizer да инсталира приложения и натиснете пак „Изтегли“",
+                this, "Разрешете на Subtitle Synchronizer да инсталира приложения и натиснете пак „Обнови“",
                 Toast.LENGTH_LONG,
             ).show()
             if (!open(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))) {
@@ -270,7 +275,7 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
             }
             runOnUiThread {
                 updating = false
-                res.onFailure { updateStatus.text = "Неуспешно обновяване: ${it.message}" }
+                res.onFailure { updateStatus.text = "Неуспешно обновяване (няма връзка?): ${it.message}" }
             }
         }.start()
     }
@@ -557,6 +562,8 @@ class MainActivity : Activity(), SharedPreferences.OnSharedPreferenceChangeListe
             if (prefs.holdHotkey) "със задържане на бутона" else "с кратко натискане"
         sizeLabel.text = "Размер на текста: ${prefs.textSizeSp}"
         marginLabel.text = "Височина от долния край: ${prefs.bottomMarginDp}"
+        widthLabel.text = "Ширина на субтитрите: ${prefs.subtitleWidthPct}% от екрана " +
+            "(всеки ред от .srt е на отделен ред; по-дълъг ред се пренася)"
         defOffsetLabel.text = "Отместване по подразбиране за нови файлове: ${SyncModel.formatOffset(prefs.defaultOffsetMs)}"
         calibLabel.text = "Корекция на позицията от плейъра: ${prefs.calibrationMs} ms"
     }

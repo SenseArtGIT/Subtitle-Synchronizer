@@ -24,6 +24,11 @@ class Prefs(context: Context) {
         get() = sp.getInt(K_BOTTOM, 36)
         set(v) = sp.edit().putInt(K_BOTTOM, v.coerceIn(0, 400)).apply()
 
+    /** Ширина на областта за субтитри, в % от ширината на екрана. */
+    var subtitleWidthPct: Int
+        get() = sp.getInt(K_SUB_WIDTH, 90)
+        set(v) = sp.edit().putInt(K_SUB_WIDTH, v.coerceIn(30, 100)).apply()
+
     var calibrationMs: Long
         get() = sp.getLong(K_CALIB, 0)
         set(v) = sp.edit().putLong(K_CALIB, v).apply()
@@ -159,6 +164,7 @@ class Prefs(context: Context) {
         const val K_HOLD = "hold_hotkey"
         const val K_AUTO_A11Y = "auto_a11y"
         const val K_SYNCS_CLEARED = "syncs_cleared"
+        const val K_SUB_WIDTH = "subtitle_width"
         const val K_DIAG = "last_locate"
 
         fun formatBytes(b: Long): String = when {
